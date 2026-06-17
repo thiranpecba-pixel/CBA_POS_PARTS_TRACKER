@@ -1240,7 +1240,6 @@ function renderOverview() {
             <div class="bar-label" title="${esc(t)}">${esc(t)}</div>
             <div class="bar-val" style="color:${col}">${c}</div>
           </div>
-          <div class="bar-track"><div class="bar-fill" style="width:${(c/mx*100).toFixed(0)}%;background:${col}"></div></div>
         </div>`;
       }).join('')}</div>`
     : '<div class="empty-state"><div class="icon">✅</div><p>All items returned — nothing outstanding!</p></div>';
