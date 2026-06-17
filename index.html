@@ -1,6 +1,6 @@
 <!--
   ============================================================
-  CBA Terminal Tracker
+  CBA Parts Tracker
   Copyright (c) 2025 CBA. All Rights Reserved.
 
   This software and its source code are the exclusive property
@@ -396,11 +396,15 @@ header {
 /* ============================================================
    OVERVIEW — BAR CHART
    ============================================================ */
-.bar-row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
-.bar-label { width: 120px; font-size: 12px; color: var(--text-muted); flex-shrink: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.bar-track { flex: 1; height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; }
+.bar-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px 20px; }
+.bar-row { display: flex; flex-direction: column; gap: 6px; }
+.bar-row-top { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.bar-label { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+.bar-val { font-family: 'DM Mono', monospace; font-size: 12px; font-weight: 700; flex-shrink: 0; }
+.bar-track { width: 100%; height: 7px; background: var(--border); border-radius: 4px; overflow: hidden; }
 .bar-fill { height: 100%; border-radius: 4px; transition: width 0.9s cubic-bezier(0.4,0,0.2,1); }
-.bar-val { width: 28px; text-align: right; font-family: 'DM Mono', monospace; font-size: 12px; font-weight: 600; }
+@media (max-width: 900px) { .bar-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 500px)  { .bar-grid { grid-template-columns: 1fr; } }
 
 /* ============================================================
    OVERVIEW — DONUT
@@ -713,6 +717,65 @@ header {
   font-size: 11px; color: var(--text-muted); margin-bottom: 14px;
 }
 .divider { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+
+/* ============================================================
+   DISPATCH BY ITEM TYPE — DESCRIPTION TABLE
+   ============================================================ */
+.item-type-divider {
+  border: none; border-top: 1px solid var(--border);
+  margin: 18px 0 14px;
+}
+.item-type-desc-label {
+  font-size: 9.5px; font-weight: 700; color: var(--text-dim);
+  text-transform: uppercase; letter-spacing: 1.2px; margin-bottom: 10px;
+  display: flex; align-items: center; gap: 6px;
+}
+.item-type-desc-label::after {
+  content: ''; flex: 1; height: 1px; background: var(--border);
+}
+.item-type-table {
+  width: 100%; border-collapse: collapse; font-size: 11px;
+}
+.item-type-table th {
+  font-family: 'DM Mono', monospace; font-size: 9px; font-weight: 700;
+  color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.8px;
+  padding: 5px 8px; border-bottom: 1px solid var(--border);
+  text-align: left; white-space: nowrap; background: var(--surface2);
+}
+.item-type-table th:last-child,
+.item-type-table td:last-child { text-align: right; }
+.item-type-table td {
+  padding: 7px 8px; border-bottom: 1px solid var(--table-border);
+  vertical-align: middle; color: var(--text-muted);
+  transition: background 0.15s;
+}
+.item-type-table tr:last-child td { border-bottom: none; }
+.item-type-table tr:hover td { background: var(--table-hover); }
+.item-dot-name { display: flex; align-items: center; gap: 7px; }
+.item-color-dot {
+  width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+}
+.item-name-text { color: var(--text); font-weight: 600; font-size: 11px; }
+.item-mini-bar-wrap {
+  display: flex; align-items: center; gap: 7px; min-width: 80px;
+}
+.item-mini-bar-track {
+  flex: 1; height: 5px; background: var(--border);
+  border-radius: 3px; overflow: hidden;
+}
+.item-mini-bar-fill { height: 100%; border-radius: 3px; }
+.item-pct {
+  font-family: 'DM Mono', monospace; font-size: 10px;
+  font-weight: 700; min-width: 32px; text-align: right;
+}
+.item-status-pills { display: flex; gap: 4px; justify-content: flex-end; flex-wrap: wrap; }
+.item-stat-chip {
+  font-family: 'DM Mono', monospace; font-size: 9px; font-weight: 700;
+  padding: 2px 7px; border-radius: 10px; white-space: nowrap;
+}
+.chip-returned  { background: rgba(16,185,129,0.12); color: var(--success); border: 1px solid rgba(16,185,129,0.25); }
+.chip-pending   { background: rgba(245,158,11,0.12);  color: var(--warn);    border: 1px solid rgba(245,158,11,0.25); }
+.chip-overdue   { background: rgba(239,68,68,0.15);   color: var(--danger);  border: 1px solid rgba(239,68,68,0.3); }
 </style>
 </head>
 <body>
@@ -802,6 +865,9 @@ header {
             <svg width="120" height="120" viewBox="0 0 120 120" id="donut-svg" style="flex-shrink:0"></svg>
             <div class="donut-legend" id="donut-legend"></div>
           </div>
+          <hr class="item-type-divider">
+          <div class="item-type-desc-label">📋 Breakdown by Item Type</div>
+          <div id="item-type-desc"></div>
         </div>
       </div>
     </div>
@@ -820,6 +886,17 @@ header {
           <span class="card-badge badge-blue" id="recent-count-badge">LATEST 5</span>
         </div>
         <div class="card-body" id="recent-activity"></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:20px">
+      <div class="card-header">
+        <div class="card-title">📝 Dispatch by Description</div>
+        <span class="card-badge badge-blue" id="desc-breakdown-badge">0 DESCRIPTIONS</span>
+      </div>
+      <div class="card-body">
+        <div class="item-type-desc-label">📋 Breakdown by Description</div>
+        <div id="desc-breakdown"></div>
       </div>
     </div>
   </div>
@@ -1155,14 +1232,18 @@ function renderOverview() {
   db.dispatch.forEach(d => { if (getStatus(d) !== 'RETURNED') tc[d.tech] = (tc[d.tech]||0)+1; });
   const entries = Object.entries(tc).sort((a,b) => b[1]-a[1]);
   const mx = Math.max(...Object.values(tc), 1);
-  document.getElementById('tech-bars').innerHTML = entries.map(([t,c],i) => {
-    const col = getColor(t, i);
-    return `<div class="bar-row">
-      <div class="bar-label" title="${esc(t)}">${esc(t)}</div>
-      <div class="bar-serial"><div class="bar-fill" style="width:${(c/mx*100).toFixed(0)}%;background:${col}"></div></div>
-      <div class="bar-val" style="color:${col}">${c}</div>
-    </div>`;
-  }).join('') || '<div class="empty-state"><div class="icon">✅</div><p>All items returned — nothing outstanding!</p></div>';
+  document.getElementById('tech-bars').innerHTML = entries.length
+    ? `<div class="bar-grid">${entries.map(([t,c],i) => {
+        const col = getColor(t, i);
+        return `<div class="bar-row">
+          <div class="bar-row-top">
+            <div class="bar-label" title="${esc(t)}">${esc(t)}</div>
+            <div class="bar-val" style="color:${col}">${c}</div>
+          </div>
+          <div class="bar-track"><div class="bar-fill" style="width:${(c/mx*100).toFixed(0)}%;background:${col}"></div></div>
+        </div>`;
+      }).join('')}</div>`
+    : '<div class="empty-state"><div class="icon">✅</div><p>All items returned — nothing outstanding!</p></div>';
   document.getElementById('pending-count-badge').textContent = new Set(outstanding.map(d=>d.tech)).size + ' PENDING';
 
   // Donut chart — by item type
@@ -1187,9 +1268,44 @@ function renderOverview() {
   if (tot === 0) {
     document.getElementById('donut-svg').innerHTML = `<text x="60" y="68" text-anchor="middle" fill="var(--text-dim)" font-size="10" font-family="Sora">No data</text>`;
     document.getElementById('donut-legend').innerHTML = '';
+    document.getElementById('item-type-desc').innerHTML = '<div class="empty-state" style="padding:20px 0"><div class="icon">📦</div><p>No dispatch records yet</p></div>';
   } else {
     document.getElementById('donut-svg').innerHTML = paths + `<text x="60" y="55" text-anchor="middle" fill="var(--text)" font-size="18" font-weight="700" font-family="DM Mono">${tot}</text><text x="60" y="70" text-anchor="middle" fill="var(--text-dim)" font-size="9" font-family="Sora">ITEMS</text>`;
     document.getElementById('donut-legend').innerHTML = leg;
+
+    // Build description table
+    const descRows = ents.map(([item, cnt], i) => {
+      const col = COLORS[i % COLORS.length];
+      const pct = ((cnt / tot) * 100).toFixed(1);
+      const dispatched = db.dispatch.filter(d => d.itemType === item);
+      const returned = dispatched.filter(d => getStatus(d) === 'RETURNED').length;
+      const overdue  = dispatched.filter(d => getStatus(d) === 'OVERDUE').length;
+      const pending  = dispatched.filter(d => getStatus(d) === 'PENDING').length;
+      const statusChips = [
+        returned ? `<span class="item-stat-chip chip-returned">✅ ${returned} RET</span>` : '',
+        pending  ? `<span class="item-stat-chip chip-pending">⏳ ${pending} PND</span>`  : '',
+        overdue  ? `<span class="item-stat-chip chip-overdue">🔴 ${overdue} OVD</span>`  : '',
+      ].filter(Boolean).join('');
+      return `<tr>
+        <td><div class="item-dot-name"><div class="item-color-dot" style="background:${col}"></div><span class="item-name-text">${esc(item)}</span></div></td>
+        <td><div class="item-mini-bar-wrap"><div class="item-mini-bar-track"><div class="item-mini-bar-fill" style="width:${pct}%;background:${col}"></div></div><span class="item-pct" style="color:${col}">${pct}%</span></div></td>
+        <td style="text-align:center"><span class="mono" style="color:${col};font-weight:700">${cnt}</span></td>
+        <td><div class="item-status-pills">${statusChips || '<span style="color:var(--text-dim);font-size:10px">—</span>'}</div></td>
+      </tr>`;
+    }).join('');
+
+    document.getElementById('item-type-desc').innerHTML = `
+      <table class="item-type-table">
+        <thead>
+          <tr>
+            <th>Item Type</th>
+            <th>Share</th>
+            <th style="text-align:center">Count</th>
+            <th style="text-align:right">Status</th>
+          </tr>
+        </thead>
+        <tbody>${descRows}</tbody>
+      </table>`;
   }
   document.getElementById('item-type-badge').textContent = ents.length + ' TYPES';
 
@@ -1217,6 +1333,63 @@ function renderOverview() {
       </div>
     </div>`
   ).join('') || '<div class="empty-state"><div class="icon">🕐</div><p>No recent activity</p></div>';
+
+  // Description breakdown
+  const dc = {};
+  db.dispatch.forEach(d => {
+    const key = (d.desc && d.desc.trim()) ? d.desc.trim() : '—';
+    (dc[key] = dc[key] || []).push(d);
+  });
+  const descEnts = Object.entries(dc).sort((a, b) => b[1].length - a[1].length);
+  const descTot  = db.dispatch.length;
+  document.getElementById('desc-breakdown-badge').textContent = descEnts.filter(([k]) => k !== '—').length + ' DESCRIPTIONS';
+
+  if (descTot === 0 || descEnts.length === 0) {
+    document.getElementById('desc-breakdown').innerHTML =
+      '<div class="empty-state" style="padding:20px 0"><div class="icon">📝</div><p>No dispatch records yet</p></div>';
+  } else {
+    const descRows = descEnts.map(([desc, items], i) => {
+      const col  = COLORS[i % COLORS.length];
+      const cnt  = items.length;
+      const pct  = ((cnt / descTot) * 100).toFixed(1);
+      const returned = items.filter(d => getStatus(d) === 'RETURNED').length;
+      const overdue  = items.filter(d => getStatus(d) === 'OVERDUE').length;
+      const pending  = items.filter(d => getStatus(d) === 'PENDING').length;
+      // Collect unique item types for this description
+      const types = [...new Set(items.map(d => d.itemType).filter(Boolean))];
+      const typePills = types.slice(0, 3).map(t =>
+        `<span style="font-size:9px;padding:2px 7px;border-radius:10px;background:rgba(59,127,245,0.1);color:var(--accent2);border:1px solid rgba(59,127,245,0.2);font-family:'DM Mono',monospace;white-space:nowrap">${esc(t)}</span>`
+      ).join('') + (types.length > 3 ? `<span style="font-size:9px;color:var(--text-dim)">+${types.length-3}</span>` : '');
+      const statusChips = [
+        returned ? `<span class="item-stat-chip chip-returned">✅ ${returned} RET</span>` : '',
+        pending  ? `<span class="item-stat-chip chip-pending">⏳ ${pending} PND</span>`  : '',
+        overdue  ? `<span class="item-stat-chip chip-overdue">🔴 ${overdue} OVD</span>`  : '',
+      ].filter(Boolean).join('');
+      return `<tr>
+        <td style="min-width:160px"><div class="item-dot-name"><div class="item-color-dot" style="background:${col}"></div><span class="item-name-text">${esc(desc)}</span></div></td>
+        <td style="min-width:120px"><div style="display:flex;gap:4px;flex-wrap:wrap">${typePills || '<span style="color:var(--text-dim);font-size:10px">—</span>'}</div></td>
+        <td style="min-width:110px"><div class="item-mini-bar-wrap"><div class="item-mini-bar-track"><div class="item-mini-bar-fill" style="width:${pct}%;background:${col}"></div></div><span class="item-pct" style="color:${col}">${pct}%</span></div></td>
+        <td style="text-align:center;min-width:60px"><span class="mono" style="color:${col};font-weight:700">${cnt}</span></td>
+        <td><div class="item-status-pills">${statusChips || '<span style="color:var(--text-dim);font-size:10px">—</span>'}</div></td>
+      </tr>`;
+    }).join('');
+
+    document.getElementById('desc-breakdown').innerHTML = `
+      <div style="overflow-x:auto">
+        <table class="item-type-table" style="min-width:560px">
+          <thead>
+            <tr>
+              <th>Description</th>
+              <th>Item Types</th>
+              <th>Share</th>
+              <th style="text-align:center">Count</th>
+              <th style="text-align:right">Status</th>
+            </tr>
+          </thead>
+          <tbody>${descRows}</tbody>
+        </table>
+      </div>`;
+  }
 }
 
 /* ============================================================
