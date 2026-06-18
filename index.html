@@ -619,6 +619,7 @@ header {
   padding: 3px 7px; cursor: pointer; transition: all 0.15s; line-height: 1;
 }
 .row-del-btn:hover { border-color: rgba(239,68,68,0.4); color: var(--danger); background: rgba(239,68,68,0.08); }
+.row-edit-btn:hover { border-color: rgba(59,127,245,0.4) !important; color: var(--accent2) !important; background: rgba(59,127,245,0.08) !important; }
 
 .row-pw-row td { background: rgba(239,68,68,0.05) !important; padding: 10px 14px !important; }
 .row-pw-inner { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -1470,7 +1471,10 @@ function renderDispatch() {
       <td><span class="pill ${pc}">${ic} ${st}</span></td>
       <td class="text-dim" style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(d.notes||'')}">${esc(d.notes||'—')}</td>
       <td class="text-dim">${esc(d.enteredBy||'—')}</td>
-      <td><button class="row-del-btn" data-log="dispatch" data-idx="${idx}" title="Delete record">🗑</button></td>`;
+      <td><div style="display:flex;gap:4px;align-items:center">
+        <button class="row-del-btn row-edit-btn" data-log="dispatch" data-idx="${idx}" title="Edit record" onclick="openEditModal('dispatch',${idx});event.stopPropagation()">✏️</button>
+        <button class="row-del-btn" data-log="dispatch" data-idx="${idx}" title="Delete record">🗑</button>
+      </div></td>`;
   });
 }
 
@@ -1513,7 +1517,10 @@ function renderReturns() {
       <td class="text-dim" style="max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.remarks||'')}">${esc(r.remarks||'—')}</td>
       <td class="mono">${fmtDate(r.dispatchDate)}</td>
       <td class="text-dim">${esc(r.enteredBy||'—')}</td>
-      <td><button class="row-del-btn" data-log="return" data-idx="${idx}" title="Delete record">🗑</button></td>`;
+      <td><div style="display:flex;gap:4px;align-items:center">
+        <button class="row-del-btn row-edit-btn" data-log="return" data-idx="${idx}" title="Edit record" onclick="openEditModal('return',${idx});event.stopPropagation()">✏️</button>
+        <button class="row-del-btn" data-log="return" data-idx="${idx}" title="Delete record">🗑</button>
+      </div></td>`;
   });
 }
 
@@ -2082,7 +2089,7 @@ function closePwModal() {
 let _rowDelTarget = null;
 
 document.addEventListener('click', function(e) {
-  const delBtn     = e.target.closest('.row-del-btn');
+  const delBtn     = e.target.closest('.row-del-btn:not(.row-edit-btn)');
   const confirmBtn = e.target.closest('.row-pw-confirm');
   const cancelBtn  = e.target.closest('.row-pw-cancel');
   if (delBtn)     { confirmRowDelete(delBtn.dataset.log, parseInt(delBtn.dataset.idx,10), delBtn); return; }
@@ -2100,21 +2107,18 @@ function confirmRowDelete(logType, idx, btn) {
   closeRowPwPrompt();
   const record = logType==='dispatch' ? db.dispatch[idx] : db.returns[idx];
   if (!record) return;
-  const label = record.tech + ' · ' + record.serial;
+  const label = record.tech + ' · ' + (record.tid || record.serial);
   const tr = btn.closest('tr');
   const colCount = logType==='dispatch' ? 12 : 11;
   const pr = document.createElement('tr');
   pr.className = 'row-pw-row'; pr.id = 'row-pw-prompt';
   pr.innerHTML = `<td colspan="${colCount}"><div class="row-pw-inner">
-    <span>🔐 Delete: <strong>${esc(label)}</strong></span>
-    <input class="row-pw-input" type="password" id="row-pw-field" placeholder="Admin password">
-    <button class="row-pw-confirm">Delete</button>
+    <span>🗑 Delete: <strong>${esc(label)}</strong></span>
+    <button class="row-pw-confirm">Yes, Delete</button>
     <button class="row-pw-cancel">Cancel</button>
-    <span class="row-pw-err" id="row-pw-err" style="display:none">❌ Wrong password</span>
   </div></td>`;
   tr.insertAdjacentElement('afterend', pr);
   tr.style.background = 'rgba(239,68,68,0.06)';
-  document.getElementById('row-pw-field').focus();
   _rowDelTarget = { logType, idx };
 }
 
@@ -2127,20 +2131,197 @@ function closeRowPwPrompt() {
 function executeRowDelete() {
   if (!_rowDelTarget) return;
   const { logType, idx } = _rowDelTarget;
-  const field = document.getElementById('row-pw-field');
-  const errEl = document.getElementById('row-pw-err');
-  if (field.value !== ADMIN_PASSWORD) {
-    errEl.style.display = 'inline';
-    field.classList.add('pw-shake');
-    setTimeout(()=>field.classList.remove('pw-shake'), 400);
-    field.value = ''; field.focus(); return;
-  }
   const arr   = logType==='dispatch' ? db.dispatch : db.returns;
-  const label = arr[idx] ? arr[idx].serial : 'record';
+  const label = arr[idx] ? (arr[idx].tid || arr[idx].serial) : 'record';
   arr.splice(idx, 1);
   closeRowPwPrompt(); renderOverview();
   if (logType==='dispatch') renderDispatch(); else renderReturns();
   showToast('🗑 Deleted: ' + label); saveDb();
+}
+
+/* ============================================================
+   ROW-LEVEL EDIT — opens pre-filled modal, no password needed
+   ============================================================ */
+function openEditModal(logType, idx) {
+  const techs    = db.staff.filter(s=>s.role==='TECHNICIAN'&&s.active==='YES').map(s=>s.name);
+  const admins   = db.staff.filter(s=>s.role==='DATA ENTRY STAFF'&&s.active==='YES').map(s=>s.name);
+  const itemTypes = [...new Set(db.dispatch.map(d=>d.itemType))].sort();
+
+  if (logType === 'dispatch') {
+    const d = db.dispatch[idx];
+    if (!d) return;
+    document.getElementById('modal-title').innerHTML = '✏️ Edit Dispatch Entry';
+    document.getElementById('modal-body').innerHTML = `
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label">Dispatch Date *</label>
+          <input class="form-input" type="date" id="e-date" value="${esc(d.date||'')}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Time</label>
+          <input class="form-input" type="time" id="e-time" value="${esc(d.time||'')}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">TID Number *</label>
+          <input class="form-input" type="text" id="e-tid" value="${esc(d.tid||'')}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Merchant Name *</label>
+          <input class="form-input" type="text" id="e-merchant" value="${esc(d.merchant||'')}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Serial No.</label>
+          <input class="form-input" type="text" id="e-serial" value="${esc(d.serial||'')}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Technician *</label>
+          <select class="form-select" id="e-tech">
+            <option value="">Select…</option>
+            ${techs.map(t=>`<option${t===d.tech?' selected':''}>${esc(t)}</option>`).join('')}
+            ${!techs.includes(d.tech)&&d.tech?`<option selected>${esc(d.tech)}</option>`:''}
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Item Type *</label>
+          <input class="form-input" type="text" id="e-itemtype" list="eitl" value="${esc(d.itemType||'')}">
+          <datalist id="eitl">${itemTypes.map(t=>`<option>${esc(t)}</option>`).join('')}</datalist>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Description</label>
+          <input class="form-input" type="text" id="e-desc" value="${esc(d.desc||'')}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Return Due Date</label>
+          <input class="form-input" type="date" id="e-due" value="${esc(d.dueDate||'')}">
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Notes / Remarks</label>
+          <input class="form-input" type="text" id="e-notes" value="${esc(d.notes||'')}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Entered By</label>
+          <select class="form-select" id="e-enteredby">
+            <option value="">Select…</option>
+            ${admins.map(a=>`<option${a===d.enteredBy?' selected':''}>${esc(a)}</option>`).join('')}
+            ${!admins.includes(d.enteredBy)&&d.enteredBy?`<option selected>${esc(d.enteredBy)}</option>`:''}
+          </select>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="saveEdit('dispatch',${idx})">💾 Save Changes</button>
+      </div>`;
+  } else {
+    const r = db.returns[idx];
+    if (!r) return;
+    document.getElementById('modal-title').innerHTML = '✏️ Edit Return Entry';
+    document.getElementById('modal-body').innerHTML = `
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label">Return Date *</label>
+          <input class="form-input" type="date" id="e-date" value="${esc(r.date||'')}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Return Time</label>
+          <input class="form-input" type="time" id="e-time" value="${esc(r.time||'')}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">TID Number *</label>
+          <input class="form-input" type="text" id="e-tid" value="${esc(r.tid||'')}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Serial No.</label>
+          <input class="form-input" type="text" id="e-serial" value="${esc(r.serial||'')}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Merchant Name</label>
+          <input class="form-input" type="text" id="e-merchant" value="${esc(r.merchant||'')}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Technician *</label>
+          <select class="form-select" id="e-tech">
+            <option value="">Select…</option>
+            ${techs.map(t=>`<option${t===r.tech?' selected':''}>${esc(t)}</option>`).join('')}
+            ${!techs.includes(r.tech)&&r.tech?`<option selected>${esc(r.tech)}</option>`:''}
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Item Type</label>
+          <input class="form-input" type="text" id="e-itemtype" list="eitl2" value="${esc(r.itemType||'')}">
+          <datalist id="eitl2">${itemTypes.map(t=>`<option>${esc(t)}</option>`).join('')}</datalist>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Condition *</label>
+          <select class="form-select" id="e-condition">
+            ${['Broken','Faulty','Dead','Damaged','Other'].map(c=>`<option${c===r.condition?' selected':''}>${c}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Original Dispatch Date</label>
+          <input class="form-input" type="date" id="e-dispatchdate" value="${esc(r.dispatchDate||'')}">
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Remarks / Notes</label>
+          <input class="form-input" type="text" id="e-remarks" value="${esc(r.remarks||'')}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Entered By</label>
+          <select class="form-select" id="e-enteredby">
+            <option value="">Select…</option>
+            ${admins.map(a=>`<option${a===r.enteredBy?' selected':''}>${esc(a)}</option>`).join('')}
+            ${!admins.includes(r.enteredBy)&&r.enteredBy?`<option selected>${esc(r.enteredBy)}</option>`:''}
+          </select>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="saveEdit('return',${idx})">💾 Save Changes</button>
+      </div>`;
+  }
+  document.getElementById('modal-overlay').classList.add('open');
+}
+
+function saveEdit(logType, idx) {
+  const g = id => (document.getElementById(id)||{}).value || '';
+  if (logType === 'dispatch') {
+    const d = db.dispatch[idx];
+    if (!d) return;
+    const tid  = g('e-tid').trim();
+    const tech = g('e-tech');
+    const item = g('e-itemtype').trim();
+    if (!g('e-date') || !tid || !tech || !item) { showToast('Date, TID, Technician & Item Type are required', true); return; }
+    d.date      = g('e-date');
+    d.time      = g('e-time');
+    d.tid       = tid;
+    d.merchant  = g('e-merchant').trim();
+    d.serial    = g('e-serial').trim();
+    d.tech      = tech;
+    d.itemType  = item;
+    d.desc      = g('e-desc').trim();
+    d.dueDate   = g('e-due');
+    d.notes     = g('e-notes').trim();
+    d.enteredBy = g('e-enteredby');
+  } else {
+    const r = db.returns[idx];
+    if (!r) return;
+    const tid  = g('e-tid').trim();
+    const tech = g('e-tech');
+    if (!g('e-date') || !tid || !tech) { showToast('Date, TID & Technician are required', true); return; }
+    r.date         = g('e-date');
+    r.time         = g('e-time');
+    r.tid          = tid;
+    r.serial       = g('e-serial').trim();
+    r.merchant     = g('e-merchant').trim();
+    r.tech         = tech;
+    r.itemType     = g('e-itemtype').trim();
+    r.condition    = g('e-condition');
+    r.dispatchDate = g('e-dispatchdate');
+    r.remarks      = g('e-remarks').trim();
+    r.enteredBy    = g('e-enteredby');
+  }
+  closeModal(); renderOverview();
+  if (logType==='dispatch') renderDispatch(); else renderReturns();
+  showToast('✅ Record updated!'); saveDb();
 }
 
 /* ============================================================
