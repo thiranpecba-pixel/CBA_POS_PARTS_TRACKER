@@ -242,6 +242,8 @@ header {
 .btn-danger-solid:hover { opacity: 0.85; }
 .btn-export { background: var(--surface2); color: var(--accent); border: 1px solid rgba(0,212,170,0.3); }
 .btn-export:hover { background: rgba(0,212,170,0.08); transform: translateY(-1px); }
+.btn-pdf { background: var(--surface2); color: #e05c2a; border: 1px solid rgba(224,92,42,0.35); }
+.btn-pdf:hover { background: rgba(224,92,42,0.08); transform: translateY(-1px); }
 .btn-sm { padding: 6px 13px; font-size: 11px; }
 .btn-xs { padding: 4px 9px; font-size: 10px; }
 
@@ -777,6 +779,310 @@ header {
 .chip-returned  { background: rgba(16,185,129,0.12); color: var(--success); border: 1px solid rgba(16,185,129,0.25); }
 .chip-pending   { background: rgba(245,158,11,0.12);  color: var(--warn);    border: 1px solid rgba(245,158,11,0.25); }
 .chip-overdue   { background: rgba(239,68,68,0.15);   color: var(--danger);  border: 1px solid rgba(239,68,68,0.3); }
+
+/* ============================================================
+   PDF REPORT — PRINT STYLES
+   ============================================================ */
+
+/* --- Screen: hide the print frame div normally --- */
+#pdf-print-frame { display: none; }
+
+/* --- Print: hide everything, show only the frame --- */
+@media print {
+  @page {
+    size: A4 landscape;
+    margin: 12mm 14mm 12mm 14mm;
+  }
+
+  html, body { margin: 0 !important; padding: 0 !important; background: #fff !important; }
+
+  /* Hide the whole app */
+  body > *                { display: none !important; }
+  /* Show only our print frame */
+  body > #pdf-print-frame { display: block !important; }
+
+  * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+
+  /* Cover page: fill exactly one printed page */
+  .pdf-cover {
+    height: 100vh;
+    page-break-after: always;
+    break-after: page;
+  }
+
+  /* Keep section header with its first row of content */
+  .pdf-section-title { page-break-after: avoid; break-after: avoid; }
+
+  /* Tables: allow rows to break across pages but not mid-row */
+  .pdf-table           { page-break-inside: auto;  break-inside: auto; }
+  .pdf-table thead     { display: table-header-group; } /* repeat header on every page */
+  .pdf-table tr        { page-break-inside: avoid; break-inside: avoid; }
+
+  /* Tech cards: keep each card together */
+  .pdf-tech-card { page-break-inside: avoid; break-inside: avoid; }
+
+  /* Footer: always at end, no orphan */
+  .pdf-footer { page-break-inside: avoid; break-inside: avoid; }
+}
+
+/* ── PDF Report inner styles ─────────────────────────────── */
+#pdf-print-frame {
+  font-family: 'Sora', 'Segoe UI', Arial, sans-serif;
+  background: #fff;
+  color: #1a202c;
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.pdf-report {
+  width: 100%;
+  background: #fff;
+  color: #1a202c;
+}
+
+/* ── Cover — full-page centred layout ── */
+.pdf-cover {
+  background: linear-gradient(150deg, #0b2240 0%, #1a4278 55%, #1e5096 100%);
+  color: #fff;
+  width: 100%;
+  min-height: 100vh;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 52px 56px 40px;
+  position: relative;
+  overflow: hidden;
+}
+/* decorative circles */
+.pdf-cover::before {
+  content: '';
+  position: absolute; top: -80px; right: -80px;
+  width: 340px; height: 340px; border-radius: 50%;
+  background: rgba(255,255,255,0.04);
+  pointer-events: none;
+}
+.pdf-cover::after {
+  content: '';
+  position: absolute; bottom: -60px; left: -60px;
+  width: 240px; height: 240px; border-radius: 50%;
+  background: rgba(0,212,170,0.07);
+  pointer-events: none;
+}
+
+.pdf-cover-top { display: flex; align-items: center; gap: 16px; }
+.pdf-cover-icon {
+  width: 52px; height: 52px; border-radius: 14px;
+  background: linear-gradient(135deg, #00d4aa, #3b7ff5);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 26px; flex-shrink: 0;
+  box-shadow: 0 4px 20px rgba(0,212,170,0.35);
+}
+.pdf-cover-brand h1 { font-size: 20px; font-weight: 700; margin: 0 0 3px; letter-spacing: -0.5px; }
+.pdf-cover-brand p  { font-size: 10px; opacity: 0.55; margin: 0; letter-spacing: 1px; text-transform: uppercase; }
+
+.pdf-cover-center { flex: 1; display: flex; flex-direction: column; justify-content: center; padding: 40px 0 20px; }
+.pdf-cover-eyebrow {
+  font-size: 10px; font-weight: 700; letter-spacing: 3px;
+  text-transform: uppercase; color: #00d4aa; margin-bottom: 14px;
+}
+.pdf-cover-title {
+  font-size: 42px; font-weight: 700; letter-spacing: -2px;
+  line-height: 1.05; margin-bottom: 12px;
+}
+.pdf-cover-sub { font-size: 13px; opacity: 0.55; line-height: 1.5; max-width: 480px; }
+
+.pdf-cover-divider {
+  height: 1px; background: rgba(255,255,255,0.12);
+  margin: 24px 0;
+}
+
+.pdf-cover-meta { display: flex; gap: 48px; }
+.pdf-cover-meta-item { display: flex; flex-direction: column; gap: 4px; }
+.pdf-cover-meta-label { font-size: 9px; text-transform: uppercase; letter-spacing: 1.2px; opacity: 0.45; }
+.pdf-cover-meta-val   { font-size: 13px; font-weight: 600; }
+
+/* accent bar at bottom of cover */
+.pdf-cover-accent-bar {
+  height: 4px;
+  background: linear-gradient(90deg, #00d4aa, #3b7ff5, transparent);
+  border-radius: 2px;
+  margin-top: 32px;
+}
+
+/* ── Report body ── */
+.pdf-body { padding: 24px 0 32px; }
+
+/* ── KPI cards ── */
+.pdf-kpi-row {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 10px;
+  margin-bottom: 24px;
+}
+.pdf-kpi {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 14px 10px 12px;
+  text-align: center;
+  border-top: 3px solid #cbd5e1;
+  box-sizing: border-box;
+}
+.pdf-kpi.teal   { border-top-color: #00d4aa; }
+.pdf-kpi.green  { border-top-color: #10b981; }
+.pdf-kpi.warn   { border-top-color: #f59e0b; }
+.pdf-kpi.danger { border-top-color: #ef4444; }
+.pdf-kpi.blue   { border-top-color: #3b7ff5; }
+.pdf-kpi-val {
+  font-size: 30px; font-weight: 700;
+  font-family: 'DM Mono', 'Courier New', monospace;
+  line-height: 1; margin-bottom: 5px;
+}
+.pdf-kpi.teal   .pdf-kpi-val { color: #00b894; }
+.pdf-kpi.green  .pdf-kpi-val { color: #10b981; }
+.pdf-kpi.warn   .pdf-kpi-val { color: #d97706; }
+.pdf-kpi.danger .pdf-kpi-val { color: #dc2626; }
+.pdf-kpi.blue   .pdf-kpi-val { color: #2563eb; }
+.pdf-kpi-label {
+  font-size: 8.5px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.8px; color: #64748b;
+}
+
+/* ── Section headings ── */
+.pdf-section { margin-bottom: 26px; }
+.pdf-section-title {
+  font-size: 12px; font-weight: 700; color: #1e3a5f;
+  padding: 0 0 7px;
+  border-bottom: 2px solid #e2e8f0;
+  margin-bottom: 12px;
+  display: flex; align-items: baseline; gap: 8px;
+}
+.pdf-section-title span { color: #94a3b8; font-size: 9px; font-weight: 500; }
+
+/* ── Tables ── */
+.pdf-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 8.5px;
+  table-layout: fixed;     /* fixed columns — key for alignment */
+  margin-bottom: 4px;
+}
+.pdf-table th {
+  background: #1e3a5f;
+  color: #fff;
+  font-size: 7.5px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.5px;
+  padding: 6px 6px; text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.pdf-table td {
+  padding: 5px 6px;
+  border-bottom: 1px solid #eef2f7;
+  vertical-align: top;
+  color: #334155;
+  overflow: hidden;
+  word-break: break-word;
+}
+.pdf-table tr:nth-child(even) td { background: #f8fafc; }
+.pdf-table tr:last-child td { border-bottom: none; }
+
+/* ── Dispatch table column widths (10 cols, landscape A4 ≈ 257mm usable) ── */
+.pdf-tbl-dispatch col:nth-child(1)  { width: 8%;  }  /* Date */
+.pdf-tbl-dispatch col:nth-child(2)  { width: 9%;  }  /* TID */
+.pdf-tbl-dispatch col:nth-child(3)  { width: 13%; }  /* Merchant */
+.pdf-tbl-dispatch col:nth-child(4)  { width: 9%;  }  /* Serial */
+.pdf-tbl-dispatch col:nth-child(5)  { width: 10%; }  /* Tech */
+.pdf-tbl-dispatch col:nth-child(6)  { width: 9%;  }  /* Item Type */
+.pdf-tbl-dispatch col:nth-child(7)  { width: 15%; }  /* Description */
+.pdf-tbl-dispatch col:nth-child(8)  { width: 8%;  }  /* Due Date */
+.pdf-tbl-dispatch col:nth-child(9)  { width: 8%;  }  /* Status */
+.pdf-tbl-dispatch col:nth-child(10) { width: 11%; }  /* Entered By */
+
+/* ── Return table column widths (9 cols) ── */
+.pdf-tbl-returns col:nth-child(1) { width: 9%;  }   /* Return Date */
+.pdf-tbl-returns col:nth-child(2) { width: 9%;  }   /* TID */
+.pdf-tbl-returns col:nth-child(3) { width: 13%; }   /* Merchant */
+.pdf-tbl-returns col:nth-child(4) { width: 9%;  }   /* Serial */
+.pdf-tbl-returns col:nth-child(5) { width: 11%; }   /* Tech */
+.pdf-tbl-returns col:nth-child(6) { width: 9%;  }   /* Item Type */
+.pdf-tbl-returns col:nth-child(7) { width: 10%; }   /* Condition */
+.pdf-tbl-returns col:nth-child(8) { width: 19%; }   /* Remarks */
+.pdf-tbl-returns col:nth-child(9) { width: 11%; }   /* Entered By */
+
+/* ── Staff table column widths (7 cols) ── */
+.pdf-tbl-staff col:nth-child(1) { width: 5%;  }
+.pdf-tbl-staff col:nth-child(2) { width: 20%; }
+.pdf-tbl-staff col:nth-child(3) { width: 15%; }
+.pdf-tbl-staff col:nth-child(4) { width: 20%; }
+.pdf-tbl-staff col:nth-child(5) { width: 14%; }
+.pdf-tbl-staff col:nth-child(6) { width: 18%; }
+.pdf-tbl-staff col:nth-child(7) { width: 8%;  }
+
+/* ── Status / role badges ── */
+.pdf-badge {
+  display: inline-block; padding: 2px 6px; border-radius: 8px;
+  font-size: 7.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px;
+  white-space: nowrap;
+}
+.pdf-badge.returned { background: #d1fae5; color: #065f46; }
+.pdf-badge.pending  { background: #fef3c7; color: #92400e; }
+.pdf-badge.overdue  { background: #fee2e2; color: #991b1b; }
+.pdf-badge.clear    { background: #d1fae5; color: #065f46; }
+.pdf-badge.active   { background: #dbeafe; color: #1e40af; }
+.pdf-badge.inactive { background: #f1f5f9; color: #64748b; }
+
+/* ── Outstanding technician cards ── */
+.pdf-tech-grid {
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  gap: 8px; margin-bottom: 4px;
+}
+.pdf-tech-card {
+  background: #f8fafc; border: 1px solid #e2e8f0;
+  border-radius: 8px; padding: 10px 10px 8px;
+  border-left: 3px solid #94a3b8;
+  box-sizing: border-box;
+}
+.pdf-tech-card.overdue-card { border-left-color: #ef4444; background: #fff8f8; }
+.pdf-tech-card.clear-card   { border-left-color: #10b981; background: #f0fdf8; }
+.pdf-tech-card.pending-card { border-left-color: #f59e0b; }
+
+.pdf-tech-name { font-size: 10px; font-weight: 700; color: #1a202c; margin-bottom: 1px; }
+.pdf-tech-area { font-size: 8px; color: #94a3b8; margin-bottom: 8px; }
+
+.pdf-tech-stats {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: 4px; margin-bottom: 6px;
+  text-align: center;
+}
+.pdf-tech-stat-val {
+  font-size: 18px; font-weight: 700;
+  font-family: 'DM Mono', 'Courier New', monospace;
+  line-height: 1;
+}
+.pdf-tech-stat-lbl { font-size: 7px; color: #94a3b8; text-transform: uppercase; margin-top: 1px; }
+.pdf-tech-stat-val.danger { color: #dc2626; }
+.pdf-tech-stat-val.warn   { color: #d97706; }
+.pdf-tech-stat-val.green  { color: #059669; }
+
+.pdf-tech-meta { font-size: 7.5px; color: #64748b; margin-bottom: 4px; }
+.pdf-tids {
+  font-size: 7.5px; color: #64748b;
+  font-family: 'DM Mono', 'Courier New', monospace;
+  word-break: break-all; line-height: 1.4;
+}
+
+/* ── Footer ── */
+.pdf-footer {
+  margin-top: 28px; padding-top: 12px;
+  border-top: 1px solid #e2e8f0;
+  display: flex; justify-content: space-between; align-items: center;
+  color: #94a3b8; font-size: 8px;
+}
+.pdf-footer-left   { display: flex; flex-direction: column; gap: 2px; }
+.pdf-confidential  { color: #ef4444; font-weight: 700; font-size: 7.5px; letter-spacing: 0.5px; }
+.pdf-page-note     { font-style: italic; }
 </style>
 </head>
 <body>
@@ -801,6 +1107,7 @@ header {
         <button class="theme-btn" id="btn-light" onclick="setTheme('light')" title="Light mode">☀️</button>
       </div>
       <button class="btn btn-export btn-sm" onclick="openExportModal()">⬇ Export Excel</button>
+      <button class="btn btn-pdf btn-sm" onclick="openPdfModal()">📄 Export PDF</button>
       <div class="date-badge" id="date-badge"></div>
     </div>
   </header>
@@ -1026,8 +1333,18 @@ header {
 </div>
 
 <!-- ============================================================
-     GENERAL MODAL
+     PDF EXPORT MODAL
      ============================================================ -->
+<div class="modal-overlay" id="pdf-overlay" onclick="if(event.target===this)closePdfModal()">
+  <div class="modal" style="width:500px">
+    <button class="modal-close" onclick="closePdfModal()">✕</button>
+    <div class="modal-title">📄 Export Report as PDF</div>
+    <div id="pdf-body"></div>
+  </div>
+</div>
+
+<!-- Hidden PDF Print Frame -->
+<div id="pdf-print-frame" style="display:none"></div>
 <div class="modal-overlay" id="modal-overlay" onclick="if(event.target===this)closeModal()">
   <div class="modal">
     <button class="modal-close" onclick="closeModal()">✕</button>
@@ -2446,8 +2763,346 @@ function doExport() {
 }
 
 /* ============================================================
-   TOAST
+   PDF EXPORT
    ============================================================ */
+function openPdfModal() {
+  const allDates = [...db.dispatch.map(d=>d.date), ...db.returns.map(r=>r.date)].filter(Boolean).sort();
+  const today    = new Date().toISOString().split('T')[0];
+  const minDate  = allDates[0] || today;
+  const maxDate  = allDates[allDates.length-1] || today;
+
+  document.getElementById('pdf-body').innerHTML = `
+    <div style="font-size:12px;color:var(--text-muted);margin-bottom:16px">Choose sections and date range for the professional PDF report.</div>
+    <div class="section-label">📅 Date Range</div>
+    <div class="date-range-grid">
+      <div class="form-group"><label class="form-label">From</label><input class="form-input" type="date" id="pdf-from" value="${minDate}" oninput="updatePdfPreview()"></div>
+      <div class="form-group"><label class="form-label">To</label><input class="form-input" type="date" id="pdf-to" value="${maxDate}" oninput="updatePdfPreview()"></div>
+    </div>
+    <div class="section-label">📋 Sections to Include</div>
+    <div class="export-sheet-grid">
+      <label class="export-sheet-card selected" id="pdf-card-summary">
+        <input type="checkbox" id="pdf-summary" checked onchange="document.getElementById('pdf-card-summary').classList.toggle('selected',this.checked);updatePdfPreview()">
+        <div><div class="export-sheet-label">📊 KPI Summary</div><div class="export-sheet-sub">Overview metrics</div></div>
+      </label>
+      <label class="export-sheet-card selected" id="pdf-card-dispatch">
+        <input type="checkbox" id="pdf-dispatch" checked onchange="document.getElementById('pdf-card-dispatch').classList.toggle('selected',this.checked);updatePdfPreview()">
+        <div><div class="export-sheet-label">📤 Dispatch Log</div><div class="export-sheet-sub" id="pdf-dispatch-sub">— records</div></div>
+      </label>
+      <label class="export-sheet-card selected" id="pdf-card-returns">
+        <input type="checkbox" id="pdf-returns" checked onchange="document.getElementById('pdf-card-returns').classList.toggle('selected',this.checked);updatePdfPreview()">
+        <div><div class="export-sheet-label">📥 Return Log</div><div class="export-sheet-sub" id="pdf-returns-sub">— records</div></div>
+      </label>
+      <label class="export-sheet-card selected" id="pdf-card-outstanding">
+        <input type="checkbox" id="pdf-outstanding" checked onchange="document.getElementById('pdf-card-outstanding').classList.toggle('selected',this.checked);updatePdfPreview()">
+        <div><div class="export-sheet-label">⚠️ Outstanding</div><div class="export-sheet-sub">Technician summary</div></div>
+      </label>
+      <label class="export-sheet-card selected" id="pdf-card-staff">
+        <input type="checkbox" id="pdf-staff" checked onchange="document.getElementById('pdf-card-staff').classList.toggle('selected',this.checked);updatePdfPreview()">
+        <div><div class="export-sheet-label">👥 Staff List</div><div class="export-sheet-sub" id="pdf-staff-sub">— members</div></div>
+      </label>
+    </div>
+    <div class="export-preview" id="pdf-preview">Calculating…</div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closePdfModal()">Cancel</button>
+      <button class="btn" style="background:linear-gradient(135deg,#1e3a5f,#2563eb);color:#fff;" onclick="doPdfExport()">📄 Generate PDF Report</button>
+    </div>`;
+
+  document.getElementById('pdf-overlay').classList.add('open');
+  updatePdfPreview();
+}
+
+function closePdfModal() { document.getElementById('pdf-overlay').classList.remove('open'); }
+
+function getPdfFiltered() {
+  const from = document.getElementById('pdf-from').value;
+  const to   = document.getElementById('pdf-to').value;
+  return {
+    from, to,
+    dRows: db.dispatch.filter(d => (!from||d.date>=from) && (!to||d.date<=to)),
+    rRows: db.returns.filter(r  => (!from||r.date>=from) && (!to||r.date<=to)),
+  };
+}
+
+function updatePdfPreview() {
+  const f = getPdfFiltered();
+  const dispEl  = document.getElementById('pdf-dispatch-sub');
+  const retEl   = document.getElementById('pdf-returns-sub');
+  const staffEl = document.getElementById('pdf-staff-sub');
+  if (dispEl)  dispEl.textContent  = f.dRows.length + ' records';
+  if (retEl)   retEl.textContent   = f.rRows.length + ' records';
+  if (staffEl) staffEl.textContent = db.staff.length + ' members';
+  const total = (document.getElementById('pdf-dispatch').checked  ? f.dRows.length : 0)
+              + (document.getElementById('pdf-returns').checked   ? f.rRows.length : 0);
+  const secs  = ['pdf-summary','pdf-dispatch','pdf-returns','pdf-outstanding','pdf-staff'].filter(id=>document.getElementById(id).checked).length;
+  document.getElementById('pdf-preview').innerHTML =
+    `<span>${total} records</span> across <span>${secs} section${secs!==1?'s':''}</span>` +
+    (f.from && f.to ? ` &nbsp;·&nbsp; <span>${fmtDate(f.from)} → ${fmtDate(f.to)}</span>` : ' &nbsp;·&nbsp; All dates');
+}
+
+function doPdfExport() {
+  const f         = getPdfFiltered();
+  const now       = new Date();
+  const printDate = now.toLocaleDateString('en-GB',{day:'2-digit',month:'long',year:'numeric'})
+                  + '  ' + now.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
+  const dateRange = (f.from && f.to) ? fmtDate(f.from) + ' — ' + fmtDate(f.to) : 'All Dates';
+
+  const inclSummary     = document.getElementById('pdf-summary').checked;
+  const inclDispatch    = document.getElementById('pdf-dispatch').checked;
+  const inclReturns     = document.getElementById('pdf-returns').checked;
+  const inclOutstanding = document.getElementById('pdf-outstanding').checked;
+  const inclStaff       = document.getElementById('pdf-staff').checked;
+
+  const t2 = new Date(); t2.setHours(0,0,0,0);
+  const total       = db.dispatch.length;
+  const returned    = db.returns.length;
+  const outstanding = db.dispatch.filter(d=>getStatus(d)!=='RETURNED').length;
+  const overdue     = db.dispatch.filter(d=>getStatus(d)==='OVERDUE').length;
+  const activeTechs = [...new Set(db.dispatch.filter(d=>getStatus(d)!=='RETURNED').map(d=>d.tech))].filter(Boolean).length;
+
+  /* ── COVER PAGE (new structure matching updated CSS) ── */
+  let html = `
+  <div class="pdf-report">
+    <div class="pdf-cover">
+      <div class="pdf-cover-top">
+        <div class="pdf-cover-icon">📦</div>
+        <div class="pdf-cover-brand">
+          <h1>CBA Terminal Tracker</h1>
+          <p>Ceylon Business Appliances — Operations</p>
+        </div>
+      </div>
+
+      <div class="pdf-cover-center">
+        <div class="pdf-cover-eyebrow">Operations Report</div>
+        <div class="pdf-cover-title">Parts Tracker<br>Report</div>
+        <div class="pdf-cover-sub">Comprehensive dispatch &amp; returns summary for ${dateRange}</div>
+      </div>
+
+      <div>
+        <div class="pdf-cover-divider"></div>
+        <div class="pdf-cover-meta">
+          <div class="pdf-cover-meta-item">
+            <div class="pdf-cover-meta-label">Generated On</div>
+            <div class="pdf-cover-meta-val">${printDate}</div>
+          </div>
+          <div class="pdf-cover-meta-item">
+            <div class="pdf-cover-meta-label">Date Range</div>
+            <div class="pdf-cover-meta-val">${dateRange}</div>
+          </div>
+          <div class="pdf-cover-meta-item">
+            <div class="pdf-cover-meta-label">Total Staff</div>
+            <div class="pdf-cover-meta-val">${db.staff.length} Members</div>
+          </div>
+          <div class="pdf-cover-meta-item">
+            <div class="pdf-cover-meta-label">Dispatch Records</div>
+            <div class="pdf-cover-meta-val">${total} Items</div>
+          </div>
+        </div>
+        <div class="pdf-cover-accent-bar"></div>
+      </div>
+    </div>
+
+    <div class="pdf-body">`;
+
+  /* ── KPI Summary ── */
+  if (inclSummary) {
+    html += `
+      <div class="pdf-section">
+        <div class="pdf-section-title">📊 Summary Dashboard <span>Key performance metrics</span></div>
+        <div class="pdf-kpi-row">
+          <div class="pdf-kpi teal"><div class="pdf-kpi-val">${total}</div><div class="pdf-kpi-label">Total Dispatched</div></div>
+          <div class="pdf-kpi green"><div class="pdf-kpi-val">${returned}</div><div class="pdf-kpi-label">Total Returned</div></div>
+          <div class="pdf-kpi warn"><div class="pdf-kpi-val">${outstanding}</div><div class="pdf-kpi-label">Outstanding</div></div>
+          <div class="pdf-kpi danger"><div class="pdf-kpi-val">${overdue}</div><div class="pdf-kpi-label">Overdue</div></div>
+          <div class="pdf-kpi blue"><div class="pdf-kpi-val">${activeTechs}</div><div class="pdf-kpi-label">Active Techs</div></div>
+        </div>
+        <div style="font-size:8.5px;color:#64748b;text-align:right;margin-top:-16px;margin-bottom:4px">
+          Return rate: <strong style="color:#059669">${total ? Math.round(returned/total*100) : 100}%</strong>
+          &nbsp;·&nbsp;
+          Overdue rate: <strong style="color:#dc2626">${total ? Math.round(overdue/total*100) : 0}%</strong>
+        </div>
+      </div>`;
+  }
+
+  /* ── Dispatch Log ── */
+  if (inclDispatch) {
+    let rows = '';
+    if (!f.dRows.length) {
+      rows = `<tr><td colspan="10" style="text-align:center;color:#94a3b8;padding:14px">No dispatch records in selected range</td></tr>`;
+    } else {
+      f.dRows.forEach(d => {
+        const st = getStatus(d);
+        const bc = st==='RETURNED'?'returned':st==='OVERDUE'?'overdue':'pending';
+        rows += `<tr>
+          <td>${fmtDate(d.date)}</td>
+          <td style="font-family:'DM Mono','Courier New',monospace;font-weight:600;color:#1e3a5f">${esc(d.tid||d.serial||'—')}</td>
+          <td style="font-weight:600">${esc(d.merchant||'—')}</td>
+          <td style="font-family:'DM Mono','Courier New',monospace">${esc(d.serial||'—')}</td>
+          <td>${esc(d.tech||'—')}</td>
+          <td>${esc(d.itemType||'—')}</td>
+          <td>${esc(d.desc||'—')}</td>
+          <td>${fmtDate(d.dueDate)}</td>
+          <td><span class="pdf-badge ${bc}">${st}</span></td>
+          <td>${esc(d.enteredBy||'—')}</td>
+        </tr>`;
+      });
+    }
+    html += `
+      <div class="pdf-section">
+        <div class="pdf-section-title">📤 Dispatch Log <span>${f.dRows.length} records · ${dateRange}</span></div>
+        <table class="pdf-table pdf-tbl-dispatch">
+          <colgroup>
+            <col><col><col><col><col><col><col><col><col><col>
+          </colgroup>
+          <thead><tr>
+            <th>Date</th><th>TID / Serial</th><th>Merchant</th><th>Serial No.</th>
+            <th>Technician</th><th>Item Type</th><th>Description</th>
+            <th>Due Date</th><th>Status</th><th>Entered By</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  }
+
+  /* ── Return Log ── */
+  if (inclReturns) {
+    let rows = '';
+    if (!f.rRows.length) {
+      rows = `<tr><td colspan="9" style="text-align:center;color:#94a3b8;padding:14px">No return records in selected range</td></tr>`;
+    } else {
+      f.rRows.forEach(r => {
+        rows += `<tr>
+          <td>${fmtDate(r.date)}</td>
+          <td style="font-family:'DM Mono','Courier New',monospace;font-weight:600;color:#1e3a5f">${esc(r.tid||r.serial||'—')}</td>
+          <td style="font-weight:600">${esc(r.merchant||'—')}</td>
+          <td style="font-family:'DM Mono','Courier New',monospace">${esc(r.serial||'—')}</td>
+          <td>${esc(r.tech||'—')}</td>
+          <td>${esc(r.itemType||'—')}</td>
+          <td>${esc(r.condition||'—')}</td>
+          <td>${esc(r.remarks||'—')}</td>
+          <td>${esc(r.enteredBy||'—')}</td>
+        </tr>`;
+      });
+    }
+    html += `
+      <div class="pdf-section">
+        <div class="pdf-section-title">📥 Return Log <span>${f.rRows.length} records · ${dateRange}</span></div>
+        <table class="pdf-table pdf-tbl-returns">
+          <colgroup>
+            <col><col><col><col><col><col><col><col><col>
+          </colgroup>
+          <thead><tr>
+            <th>Return Date</th><th>TID / Serial</th><th>Merchant</th><th>Serial No.</th>
+            <th>Technician</th><th>Item Type</th><th>Condition</th><th>Remarks</th><th>Entered By</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  }
+
+  /* ── Outstanding ── */
+  if (inclOutstanding) {
+    const techs = db.staff.filter(s => s.role === 'TECHNICIAN');
+    let cards = '';
+    techs.forEach(s => {
+      const disp   = db.dispatch.filter(d => d.tech === s.name);
+      const ret    = db.returns.filter(r  => r.tech === s.name);
+      const out    = disp.filter(d => getStatus(d) !== 'RETURNED');
+      const ov     = out.filter(d => d.dueDate && new Date(d.dueDate) < t2);
+      const rate   = disp.length ? Math.round(ret.length / disp.length * 100) : 100;
+      const status = ov.length>0 ? 'OVERDUE' : out.length>0 ? 'PENDING' : 'CLEAR';
+      const cc     = status==='OVERDUE' ? 'overdue-card' : status==='CLEAR' ? 'clear-card' : 'pending-card';
+      const tids   = out.map(d=>d.tid||d.serial).filter(Boolean).join(', ') || '—';
+      const rateColor = rate>=80 ? '#059669' : rate>=50 ? '#d97706' : '#dc2626';
+      cards += `<div class="pdf-tech-card ${cc}">
+        <div class="pdf-tech-name">${esc(s.name)}</div>
+        <div class="pdf-tech-area">${esc(s.area||'—')}</div>
+        <div class="pdf-tech-stats">
+          <div class="pdf-tech-stat">
+            <div class="pdf-tech-stat-val">${disp.length}</div>
+            <div class="pdf-tech-stat-lbl">Sent</div>
+          </div>
+          <div class="pdf-tech-stat">
+            <div class="pdf-tech-stat-val ${out.length>0?'warn':'green'}">${out.length}</div>
+            <div class="pdf-tech-stat-lbl">Out</div>
+          </div>
+          <div class="pdf-tech-stat">
+            <div class="pdf-tech-stat-val ${ov.length>0?'danger':''}">${ov.length}</div>
+            <div class="pdf-tech-stat-lbl">Overdue</div>
+          </div>
+        </div>
+        <div class="pdf-tech-meta">Rate: <strong style="color:${rateColor}">${rate}%</strong> &nbsp;·&nbsp; <strong>${status}</strong></div>
+        ${out.length ? `<div class="pdf-tids">⚠ ${esc(tids)}</div>` : ''}
+      </div>`;
+    });
+    if (!cards) cards = `<p style="color:#94a3b8;font-size:10px">No technicians found.</p>`;
+    html += `
+      <div class="pdf-section">
+        <div class="pdf-section-title">⚠️ Outstanding by Technician <span>${techs.length} technicians</span></div>
+        <div class="pdf-tech-grid">${cards}</div>
+      </div>`;
+  }
+
+  /* ── Staff List ── */
+  if (inclStaff) {
+    let rows = '';
+    if (!db.staff.length) {
+      rows = `<tr><td colspan="7" style="text-align:center;color:#94a3b8;padding:14px">No staff records</td></tr>`;
+    } else {
+      db.staff.forEach((s,i) => {
+        const ac = s.active==='YES' ? 'active' : 'inactive';
+        rows += `<tr>
+          <td style="color:#94a3b8;text-align:center">${i+1}</td>
+          <td style="font-weight:700;color:#1a202c">${esc(s.name)}</td>
+          <td>${esc(s.role||'—')}</td>
+          <td>${esc(s.area||'—')}</td>
+          <td style="font-family:'DM Mono','Courier New',monospace">${esc(s.contact||'—')}</td>
+          <td style="font-family:'DM Mono','Courier New',monospace">${esc(s.email||'—')}</td>
+          <td><span class="pdf-badge ${ac}">${s.active==='YES'?'Active':'Inactive'}</span></td>
+        </tr>`;
+      });
+    }
+    html += `
+      <div class="pdf-section">
+        <div class="pdf-section-title">👥 Staff List <span>${db.staff.length} members</span></div>
+        <table class="pdf-table pdf-tbl-staff">
+          <colgroup>
+            <col><col><col><col><col><col><col>
+          </colgroup>
+          <thead><tr>
+            <th style="text-align:center">#</th><th>Name</th><th>Role</th>
+            <th>Area / Region</th><th>Contact</th><th>Email</th><th>Status</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  }
+
+  /* ── Footer ── */
+  html += `
+      <div class="pdf-footer">
+        <div class="pdf-footer-left">
+          <div>© 2025 Ceylon Business Appliances (CBA). All Rights Reserved.</div>
+          <div class="pdf-confidential">CONFIDENTIAL — INTERNAL USE ONLY</div>
+        </div>
+        <div class="pdf-page-note">Generated: ${printDate}</div>
+      </div>
+    </div><!-- /pdf-body -->
+  </div><!-- /pdf-report -->`;
+
+  const frame = document.getElementById('pdf-print-frame');
+  frame.innerHTML = html;
+  closePdfModal();
+
+  // Allow DOM to paint before triggering print dialog
+  requestAnimationFrame(() => {
+    setTimeout(() => {
+      window.print();
+      setTimeout(() => { frame.innerHTML = ''; }, 3000);
+    }, 200);
+  });
+}
+
+
 function showToast(msg, isError=false) {
   const t = document.getElementById('toast');
   document.getElementById('toast-msg').textContent = msg;
@@ -2470,7 +3125,7 @@ updateClock(); setInterval(updateClock, 30000);
    KEYBOARD SHORTCUTS
    ============================================================ */
 document.addEventListener('keydown', function(e) {
-  if (e.key === 'Escape') { closeModal(); closePwModal(); closeExportModal(); closeRowPwPrompt(); }
+  if (e.key === 'Escape') { closeModal(); closePwModal(); closeExportModal(); closePdfModal(); closeRowPwPrompt(); }
 });
 
 /* ============================================================
