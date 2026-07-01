@@ -66,13 +66,16 @@
     if (!snap.exists() || !window._dbReady) return;
     const remote = snap.data();
     // Only apply if it differs from local (avoid echo of own saves)
-    if (JSON.stringify(remote) === JSON.stringify({staff: db.staff, dispatch: db.dispatch, returns: db.returns, nextId: db.nextId})) return;
+    if (JSON.stringify(remote) === JSON.stringify({staff: db.staff, dispatch: db.dispatch, returns: db.returns, stockIn: db.stockIn, stockOut: db.stockOut, nextId: db.nextId})) return;
     db.staff    = remote.staff    || [];
     db.dispatch = remote.dispatch || [];
     db.returns  = remote.returns  || [];
+    db.stockIn  = remote.stockIn  || [];
+    db.stockOut = remote.stockOut || [];
     db.nextId   = remote.nextId   || 1;
     renderOverview();
     renderDispatch();
+    if (document.getElementById('tab-stock')?.classList.contains('active')) renderStock();
     showToast("🔄 Data synced from cloud");
   });
 
@@ -1120,6 +1123,7 @@ header {
     <button class="tab-btn" onclick="switchTab('dispatch',this)">📤 Dispatch Log</button>
     <button class="tab-btn" onclick="switchTab('returns',this)">📥 Return Log</button>
     <button class="tab-btn" onclick="switchTab('outstanding',this)">⚠️ Outstanding</button>
+    <button class="tab-btn" onclick="switchTab('stock',this)">📦 Stock</button>
     <button class="tab-btn" onclick="switchTab('staff',this)">👥 Staff</button>
   </div>
 
@@ -1207,6 +1211,14 @@ header {
         <div id="desc-breakdown"></div>
       </div>
     </div>
+
+    <div class="card" style="margin-bottom:20px">
+      <div class="card-header">
+        <div class="card-title">📦 Stock Snapshot</div>
+        <span class="card-badge badge-teal" id="ov-stock-badge">0 IN HAND</span>
+      </div>
+      <div class="card-body" id="ov-stock-snapshot"></div>
+    </div>
   </div>
 
   <!-- ======================================================
@@ -1283,6 +1295,88 @@ header {
   <div id="tab-outstanding" class="view">
     <div id="outstanding-kpi" class="kpi-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:24px;"></div>
     <div class="tech-grid" id="tech-cards"></div>
+  </div>
+
+  <!-- ======================================================
+       STOCK TAB
+       ====================================================== -->
+  <div id="tab-stock" class="view">
+    <div class="kpi-grid">
+      <div class="kpi-card teal">
+        <div class="kpi-label">Total Received</div>
+        <div class="kpi-value" id="stock-kpi-in">0</div>
+        <div class="kpi-sub">Units received (all time)</div>
+      </div>
+      <div class="kpi-card blue">
+        <div class="kpi-label">Total Issued</div>
+        <div class="kpi-value" id="stock-kpi-out">0</div>
+        <div class="kpi-sub">Units issued to staff</div>
+      </div>
+      <div class="kpi-card success">
+        <div class="kpi-label">In Hand</div>
+        <div class="kpi-value" id="stock-kpi-balance">0</div>
+        <div class="kpi-sub">Current total balance</div>
+      </div>
+      <div class="kpi-card warn">
+        <div class="kpi-label">Item Types</div>
+        <div class="kpi-value" id="stock-kpi-types">0</div>
+        <div class="kpi-sub">Distinct items tracked</div>
+      </div>
+      <div class="kpi-card danger">
+        <div class="kpi-label">Low Stock</div>
+        <div class="kpi-value" id="stock-kpi-low">0</div>
+        <div class="kpi-sub" id="stock-kpi-low-sub">Below 10 units</div>
+      </div>
+    </div>
+
+    <div class="action-bar">
+      <input class="search-input" id="stock-search" type="text" placeholder="🔍  Search item type, source, issued to…" oninput="renderStock()">
+      <select class="filter-select" id="stock-filter-type" onchange="renderStock()"><option value="">All Item Types</option></select>
+      <select class="filter-select" id="stock-filter-move" onchange="renderStock()">
+        <option value="">All Movements</option>
+        <option value="IN">📥 Stock In</option>
+        <option value="OUT">📤 Stock Out</option>
+      </select>
+      <select class="filter-select" id="stock-filter-month" onchange="renderStock()"><option value="">All Months</option></select>
+      <button class="btn btn-primary btn-sm" onclick="openStockModal('in')">＋ Stock In</button>
+      <button class="btn btn-primary btn-sm" onclick="openStockModal('out')">＋ Stock Out</button>
+      <button class="btn btn-danger-outline btn-sm" onclick="openClearModal('stock')">🗑 Clear Log</button>
+    </div>
+
+    <div id="stock-low-alert"></div>
+
+    <div class="card" style="margin-bottom:20px">
+      <div class="card-header">
+        <div class="card-title">📊 Stock Balance by Item Type</div>
+        <span class="card-badge badge-teal" id="stock-balance-badge">0 TYPES</span>
+      </div>
+      <div style="overflow-x:auto">
+        <table class="data-table">
+          <thead>
+            <tr><th>Item Type</th><th>Received</th><th>Issued</th><th>Balance</th><th>Status</th></tr>
+          </thead>
+          <tbody id="stock-balance-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">📦 Stock Movement Ledger</div>
+        <span class="card-badge badge-blue" id="stock-count-badge">0 RECORDS</span>
+      </div>
+      <div style="overflow-x:auto">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Date</th><th>Movement</th><th>Item Type</th><th>Qty</th><th>Source / Issued To</th>
+              <th>Notes</th><th>Entered By</th><th></th>
+            </tr>
+          </thead>
+          <tbody id="stock-tbody"></tbody>
+        </table>
+      </div>
+    </div>
   </div>
 
   <!-- ======================================================
@@ -1395,8 +1489,12 @@ const db = {
   staff:    [],
   dispatch: [],
   returns:  [],
+  stockIn:  [],   // bulk stock received: {date, itemType, qty, source, notes, enteredBy}
+  stockOut: [],   // bulk stock issued:   {date, itemType, qty, issuedTo, notes, enteredBy}
   nextId: 1,
 };
+
+const LOW_STOCK_THRESHOLD = 10;
 
 // Flag used by the real-time listener to avoid acting before init
 window._dbReady = false;
@@ -1408,6 +1506,8 @@ async function saveDb() {
       staff:    db.staff,
       dispatch: db.dispatch,
       returns:  db.returns,
+      stockIn:  db.stockIn,
+      stockOut: db.stockOut,
       nextId:   db.nextId,
     });
   }
@@ -1421,6 +1521,8 @@ async function loadDb() {
       db.staff    = data.staff    || [];
       db.dispatch = data.dispatch || [];
       db.returns  = data.returns  || [];
+      db.stockIn  = data.stockIn  || [];
+      db.stockOut = data.stockOut || [];
       db.nextId   = data.nextId   || 1;
     }
   }
@@ -1527,6 +1629,7 @@ function switchTab(tab, btn) {
   if (tab === 'dispatch')    renderDispatch();
   else if (tab === 'returns')    renderReturns();
   else if (tab === 'outstanding') renderOutstanding();
+  else if (tab === 'stock')       renderStock();
   else if (tab === 'staff')       renderStaff();
   else if (tab === 'overview')    renderOverview();
 }
@@ -1706,6 +1809,32 @@ function renderOverview() {
           <tbody>${descRows}</tbody>
         </table>
       </div>`;
+  }
+
+  // Stock snapshot
+  const bal = computeStockBalances();
+  const balTot = bal.reduce((s,b)=>s+b.balance, 0);
+  document.getElementById('ov-stock-badge').textContent = balTot + ' IN HAND';
+  if (!bal.length) {
+    document.getElementById('ov-stock-snapshot').innerHTML =
+      '<div class="empty-state" style="padding:20px 0"><div class="icon">📦</div><p>No stock movements logged yet</p></div>';
+  } else {
+    const snapRows = bal.slice(0,8).map((b,i) => {
+      const col = COLORS[i % COLORS.length];
+      const low = b.balance < LOW_STOCK_THRESHOLD;
+      return `<tr>
+        <td><div class="item-dot-name"><div class="item-color-dot" style="background:${col}"></div><span class="item-name-text">${esc(b.itemType)}</span></div></td>
+        <td style="text-align:center" class="mono">${b.received}</td>
+        <td style="text-align:center" class="mono">${b.issued}</td>
+        <td style="text-align:center"><span class="mono" style="font-weight:700;color:${low?'var(--danger)':'var(--success)'}">${b.balance}</span></td>
+        <td style="text-align:right"><span class="pill ${low?'pill-overdue':'pill-clear'}">${low?'🔴 LOW':'✅ OK'}</span></td>
+      </tr>`;
+    }).join('');
+    document.getElementById('ov-stock-snapshot').innerHTML = `
+      <table class="item-type-table">
+        <thead><tr><th>Item Type</th><th style="text-align:center">Received</th><th style="text-align:center">Issued</th><th style="text-align:center">Balance</th><th style="text-align:right">Status</th></tr></thead>
+        <tbody>${snapRows}</tbody>
+      </table>`;
   }
 }
 
@@ -1892,6 +2021,377 @@ function renderOutstanding() {
     <div class="kpi-card warn"><div class="kpi-label">Total Outstanding</div><div class="kpi-value" style="color:var(--warn)">${tot}</div><div class="kpi-sub">Across all technicians</div></div>
     <div class="kpi-card danger"><div class="kpi-label">Overdue Items</div><div class="kpi-value" style="color:var(--danger)">${totOv}</div><div class="kpi-sub">Past due date</div></div>
     <div class="kpi-card success"><div class="kpi-label">Technicians Clear</div><div class="kpi-value" style="color:var(--success)">${clr}</div><div class="kpi-sub">All parts returned</div></div>`;
+}
+
+/* ============================================================
+   STOCK — bulk stock in / stock out tracking
+   ============================================================ */
+function computeStockBalances() {
+  const types = new Set([...db.stockIn.map(s=>s.itemType), ...db.stockOut.map(s=>s.itemType)]);
+  const rows = [...types].filter(Boolean).sort().map(itemType => {
+    const received = db.stockIn.filter(s=>s.itemType===itemType).reduce((sum,s)=>sum+(Number(s.qty)||0),0);
+    const issued   = db.stockOut.filter(s=>s.itemType===itemType).reduce((sum,s)=>sum+(Number(s.qty)||0),0);
+    return { itemType, received, issued, balance: received - issued };
+  });
+  return rows.sort((a,b) => a.balance - b.balance);
+}
+
+function getStockBalance(itemType) {
+  if (!itemType) return 0;
+  const received = db.stockIn.filter(s=>s.itemType===itemType).reduce((sum,s)=>sum+(Number(s.qty)||0),0);
+  const issued   = db.stockOut.filter(s=>s.itemType===itemType).reduce((sum,s)=>sum+(Number(s.qty)||0),0);
+  return received - issued;
+}
+
+function renderStock() {
+  const s   = document.getElementById('stock-search').value.toLowerCase();
+  const tf  = document.getElementById('stock-filter-type').value;
+  const mvf = document.getElementById('stock-filter-move').value;
+  const mf  = document.getElementById('stock-filter-month').value;
+
+  const bal = computeStockBalances();
+
+  // KPIs
+  const totIn  = db.stockIn.reduce((sum,s)=>sum+(Number(s.qty)||0),0);
+  const totOut = db.stockOut.reduce((sum,s)=>sum+(Number(s.qty)||0),0);
+  const lowItems = bal.filter(b=>b.balance < LOW_STOCK_THRESHOLD);
+  document.getElementById('stock-kpi-in').textContent      = totIn;
+  document.getElementById('stock-kpi-out').textContent     = totOut;
+  document.getElementById('stock-kpi-balance').textContent = totIn - totOut;
+  document.getElementById('stock-kpi-types').textContent   = bal.length;
+  document.getElementById('stock-kpi-low').textContent     = lowItems.length;
+  document.getElementById('stock-kpi-low-sub').textContent = lowItems.length
+    ? lowItems.slice(0,2).map(b=>b.itemType).join(', ') + (lowItems.length>2 ? ` +${lowItems.length-2} more` : '')
+    : 'Below 10 units';
+
+  // Low stock alert banner
+  const alertEl = document.getElementById('stock-low-alert');
+  if (lowItems.length) {
+    alertEl.innerHTML = `<div class="warn-box" style="margin-bottom:20px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-weight:700;color:var(--danger)">⚠️ Low Stock Alert — ${lowItems.length} item${lowItems.length!==1?'s':''} below ${LOW_STOCK_THRESHOLD} units</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">
+        ${lowItems.map(b=>`<span class="item-stat-chip chip-overdue" title="Balance: ${b.balance}">🔴 ${esc(b.itemType)} — ${b.balance} left</span>`).join('')}
+      </div>
+    </div>`;
+  } else {
+    alertEl.innerHTML = '';
+  }
+
+  // Balance table
+  document.getElementById('stock-balance-badge').textContent = bal.length + ' TYPES';
+  document.getElementById('stock-balance-tbody').innerHTML = bal.length ? bal.map(b => {
+    const lowFlag = b.balance < LOW_STOCK_THRESHOLD;
+    return `<tr>
+      <td><strong>${esc(b.itemType)}</strong></td>
+      <td class="mono" style="color:var(--success)">${b.received}</td>
+      <td class="mono" style="color:var(--accent2)">${b.issued}</td>
+      <td class="mono" style="font-weight:700;color:${lowFlag?'var(--danger)':'var(--text)'}">${b.balance}</td>
+      <td><span class="pill ${lowFlag?'pill-overdue':'pill-clear'}">${lowFlag?'🔴 LOW STOCK':'✅ OK'}</span></td>
+    </tr>`;
+  }).join('') : `<tr><td colspan="5"><div class="empty-state"><div class="icon">📦</div><p>No stock recorded yet — use "＋ Stock In" to log received items</p></div></td></tr>`;
+
+  // Rebuild item type filter dropdown
+  const typeSel = document.getElementById('stock-filter-type');
+  const curType = typeSel.value;
+  const allTypes = [...new Set([...db.stockIn.map(s=>s.itemType), ...db.stockOut.map(s=>s.itemType)])].filter(Boolean).sort();
+  typeSel.innerHTML = '<option value="">All Item Types</option>' + allTypes.map(t=>`<option value="${esc(t)}"${t===curType?' selected':''}>${esc(t)}</option>`).join('');
+
+  // Combined ledger
+  const combined = [
+    ...db.stockIn.map((r,i)  => ({ ...r, move:'IN',  idx:i })),
+    ...db.stockOut.map((r,i) => ({ ...r, move:'OUT', idx:i })),
+  ];
+
+  // Rebuild month filter dropdown
+  const mSel = document.getElementById('stock-filter-month');
+  const curM = mSel.value;
+  const allMonths = [...new Set(combined.map(r=>monthKey(r.date)))].filter(Boolean).sort((a,b)=>new Date('1 '+a)-new Date('1 '+b));
+  mSel.innerHTML = '<option value="">All Months</option>' + allMonths.map(m=>`<option value="${esc(m)}"${m===curM?' selected':''}>${esc(m)}</option>`).join('');
+
+  const rows = combined.filter(r => {
+    const who = r.move==='IN' ? r.source : r.issuedTo;
+    return (!s   || [r.itemType, who, r.notes, r.enteredBy].some(v=>String(v||'').toLowerCase().includes(s)))
+        && (!tf  || r.itemType===tf)
+        && (!mvf || r.move===mvf)
+        && (!mf  || monthKey(r.date)===mf);
+  }).sort((a,b) => String(b.date||'').localeCompare(String(a.date||'')));
+
+  document.getElementById('stock-count-badge').textContent = rows.length + ' RECORDS';
+  document.getElementById('stock-tbody').innerHTML = buildMonthlyTable(rows, 'date', 8, r => {
+    const isIn  = r.move==='IN';
+    const who   = isIn ? (r.source||'—') : (r.issuedTo||'—');
+    const logType = isIn ? 'stockin' : 'stockout';
+    return `<td class="mono">${fmtDate(r.date)}</td>
+      <td><span class="pill ${isIn?'pill-clear':'pill-pending'}">${isIn?'📥 IN':'📤 OUT'}</span></td>
+      <td><strong>${esc(r.itemType)}</strong></td>
+      <td class="mono" style="font-weight:700;color:${isIn?'var(--success)':'var(--accent2)'}">${isIn?'+':'-'}${esc(r.qty)}</td>
+      <td>${esc(who)}</td>
+      <td class="text-dim" style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.notes||'')}">${esc(r.notes||'—')}</td>
+      <td class="text-dim">${esc(r.enteredBy||'—')}</td>
+      <td><div style="display:flex;gap:4px;align-items:center">
+        <button class="row-del-btn row-edit-btn" data-log="${logType}" data-idx="${r.idx}" title="Edit record" onclick="openEditStockModal('${logType}',${r.idx});event.stopPropagation()">✏️</button>
+        <button class="row-del-btn" data-log="${logType}" data-idx="${r.idx}" title="Delete record">🗑</button>
+      </div></td>`;
+  });
+}
+
+function openStockModal(type) {
+  const admins = db.staff.filter(s=>s.role==='DATA ENTRY STAFF'&&s.active==='YES').map(s=>s.name);
+  const techs  = db.staff.filter(s=>s.role==='TECHNICIAN'&&s.active==='YES').map(s=>s.name);
+  const itemTypes = [...new Set([...db.stockIn.map(s=>s.itemType), ...db.stockOut.map(s=>s.itemType), ...db.dispatch.map(d=>d.itemType)])].filter(Boolean).sort();
+  const today = new Date().toISOString().split('T')[0];
+
+  if (type === 'in') {
+    document.getElementById('modal-title').innerHTML = '📥 New Stock In Entry';
+    document.getElementById('modal-body').innerHTML = `
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label">Date *</label>
+          <input class="form-input" type="date" id="si-date" value="${today}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Item Type *</label>
+          <input class="form-input" type="text" id="si-itemtype" list="sitl" placeholder="e.g. Charger">
+          <datalist id="sitl">${itemTypes.map(t=>`<option>${esc(t)}</option>`).join('')}</datalist>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Quantity *</label>
+          <input class="form-input" type="number" id="si-qty" min="1" placeholder="e.g. 300">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Source / Supplier *</label>
+          <input class="form-input" type="text" id="si-source" placeholder="e.g. Colombo Store / Head Office">
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Notes</label>
+          <input class="form-input" type="text" id="si-notes" placeholder="Optional notes about this receipt">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Entered By</label>
+          <select class="form-select" id="si-enteredby">
+            <option value="">Select…</option>
+            ${admins.map(a=>`<option>${esc(a)}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="saveStockIn()">＋ Add Stock In</button>
+      </div>`;
+  } else {
+    document.getElementById('modal-title').innerHTML = '📤 New Stock Out Entry';
+    document.getElementById('modal-body').innerHTML = `
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label">Date *</label>
+          <input class="form-input" type="date" id="so-date" value="${today}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Item Type *</label>
+          <input class="form-input" type="text" id="so-itemtype" list="sotl" placeholder="e.g. Charger" oninput="updateStockOutBalanceHint()">
+          <datalist id="sotl">${itemTypes.map(t=>`<option>${esc(t)}</option>`).join('')}</datalist>
+          <div class="form-hint" id="so-balance-hint"></div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Quantity *</label>
+          <input class="form-input" type="number" id="so-qty" min="1" placeholder="e.g. 5" oninput="updateStockOutBalanceHint()">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Issued To *</label>
+          <input class="form-input" type="text" id="so-issuedto" list="sostaff" placeholder="Who received it">
+          <datalist id="sostaff">${techs.map(t=>`<option>${esc(t)}</option>`).join('')}</datalist>
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Notes</label>
+          <input class="form-input" type="text" id="so-notes" placeholder="Optional notes about this issue">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Entered By</label>
+          <select class="form-select" id="so-enteredby">
+            <option value="">Select…</option>
+            ${admins.map(a=>`<option>${esc(a)}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="saveStockOut()">＋ Add Stock Out</button>
+      </div>`;
+  }
+  document.getElementById('modal-overlay').classList.add('open');
+}
+
+function updateStockOutBalanceHint() {
+  const itemType = document.getElementById('so-itemtype').value.trim();
+  const qty      = Number(document.getElementById('so-qty').value) || 0;
+  const hint     = document.getElementById('so-balance-hint');
+  if (!itemType) { hint.textContent = ''; return; }
+  const bal = getStockBalance(itemType);
+  if (qty > bal) {
+    hint.style.color = 'var(--danger)';
+    hint.textContent = `⚠️ Current balance is only ${bal} — this will take stock negative`;
+  } else {
+    hint.style.color = 'var(--text-dim)';
+    hint.textContent = `Current balance: ${bal}`;
+  }
+}
+
+function saveStockIn() {
+  const itemType = document.getElementById('si-itemtype').value.trim();
+  const qty      = Number(document.getElementById('si-qty').value);
+  const source   = document.getElementById('si-source').value.trim();
+  if (!itemType || !qty || qty <= 0 || !source) { showToast('Item Type, Quantity & Source are required', true); return; }
+  db.stockIn.push({
+    date:      document.getElementById('si-date').value,
+    itemType, qty, source,
+    notes:     document.getElementById('si-notes').value.trim(),
+    enteredBy: document.getElementById('si-enteredby').value,
+  });
+  closeModal(); showToast(`✅ ${qty} × ${itemType} received!`);
+  renderOverview(); renderStock(); saveDb();
+}
+
+function saveStockOut() {
+  const itemType = document.getElementById('so-itemtype').value.trim();
+  const qty      = Number(document.getElementById('so-qty').value);
+  const issuedTo = document.getElementById('so-issuedto').value.trim();
+  if (!itemType || !qty || qty <= 0 || !issuedTo) { showToast('Item Type, Quantity & Issued To are required', true); return; }
+  db.stockOut.push({
+    date:      document.getElementById('so-date').value,
+    itemType, qty, issuedTo,
+    notes:     document.getElementById('so-notes').value.trim(),
+    enteredBy: document.getElementById('so-enteredby').value,
+  });
+  closeModal();
+  const newBal = getStockBalance(itemType);
+  if (newBal < LOW_STOCK_THRESHOLD) {
+    showToast(`⚠️ ${itemType} is now low — only ${newBal} left!`, true);
+  } else {
+    showToast(`✅ ${qty} × ${itemType} issued to ${issuedTo}!`);
+  }
+  renderOverview(); renderStock(); saveDb();
+}
+
+function openEditStockModal(logType, idx) {
+  const admins = db.staff.filter(s=>s.role==='DATA ENTRY STAFF'&&s.active==='YES').map(s=>s.name);
+  const techs  = db.staff.filter(s=>s.role==='TECHNICIAN'&&s.active==='YES').map(s=>s.name);
+  const itemTypes = [...new Set([...db.stockIn.map(s=>s.itemType), ...db.stockOut.map(s=>s.itemType), ...db.dispatch.map(d=>d.itemType)])].filter(Boolean).sort();
+
+  if (logType === 'stockin') {
+    const r = db.stockIn[idx];
+    if (!r) return;
+    document.getElementById('modal-title').innerHTML = '✏️ Edit Stock In Entry';
+    document.getElementById('modal-body').innerHTML = `
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label">Date *</label>
+          <input class="form-input" type="date" id="e-si-date" value="${esc(r.date||'')}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Item Type *</label>
+          <input class="form-input" type="text" id="e-si-itemtype" list="esitl" value="${esc(r.itemType||'')}">
+          <datalist id="esitl">${itemTypes.map(t=>`<option>${esc(t)}</option>`).join('')}</datalist>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Quantity *</label>
+          <input class="form-input" type="number" id="e-si-qty" min="1" value="${esc(r.qty||'')}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Source / Supplier *</label>
+          <input class="form-input" type="text" id="e-si-source" value="${esc(r.source||'')}">
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Notes</label>
+          <input class="form-input" type="text" id="e-si-notes" value="${esc(r.notes||'')}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Entered By</label>
+          <select class="form-select" id="e-si-enteredby">
+            <option value="">Select…</option>
+            ${admins.map(a=>`<option${a===r.enteredBy?' selected':''}>${esc(a)}</option>`).join('')}
+            ${!admins.includes(r.enteredBy)&&r.enteredBy?`<option selected>${esc(r.enteredBy)}</option>`:''}
+          </select>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="saveEditStock('stockin',${idx})">💾 Save Changes</button>
+      </div>`;
+  } else {
+    const r = db.stockOut[idx];
+    if (!r) return;
+    document.getElementById('modal-title').innerHTML = '✏️ Edit Stock Out Entry';
+    document.getElementById('modal-body').innerHTML = `
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label">Date *</label>
+          <input class="form-input" type="date" id="e-so-date" value="${esc(r.date||'')}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Item Type *</label>
+          <input class="form-input" type="text" id="e-so-itemtype" list="esotl" value="${esc(r.itemType||'')}">
+          <datalist id="esotl">${itemTypes.map(t=>`<option>${esc(t)}</option>`).join('')}</datalist>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Quantity *</label>
+          <input class="form-input" type="number" id="e-so-qty" min="1" value="${esc(r.qty||'')}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Issued To *</label>
+          <input class="form-input" type="text" id="e-so-issuedto" list="esostaff" value="${esc(r.issuedTo||'')}">
+          <datalist id="esostaff">${techs.map(t=>`<option>${esc(t)}</option>`).join('')}</datalist>
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Notes</label>
+          <input class="form-input" type="text" id="e-so-notes" value="${esc(r.notes||'')}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Entered By</label>
+          <select class="form-select" id="e-so-enteredby">
+            <option value="">Select…</option>
+            ${admins.map(a=>`<option${a===r.enteredBy?' selected':''}>${esc(a)}</option>`).join('')}
+            ${!admins.includes(r.enteredBy)&&r.enteredBy?`<option selected>${esc(r.enteredBy)}</option>`:''}
+          </select>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="saveEditStock('stockout',${idx})">💾 Save Changes</button>
+      </div>`;
+  }
+  document.getElementById('modal-overlay').classList.add('open');
+}
+
+function saveEditStock(logType, idx) {
+  if (logType === 'stockin') {
+    const r = db.stockIn[idx];
+    if (!r) return;
+    const itemType = document.getElementById('e-si-itemtype').value.trim();
+    const qty      = Number(document.getElementById('e-si-qty').value);
+    const source   = document.getElementById('e-si-source').value.trim();
+    if (!itemType || !qty || qty <= 0 || !source) { showToast('Item Type, Quantity & Source are required', true); return; }
+    r.date      = document.getElementById('e-si-date').value;
+    r.itemType  = itemType;
+    r.qty       = qty;
+    r.source    = source;
+    r.notes     = document.getElementById('e-si-notes').value.trim();
+    r.enteredBy = document.getElementById('e-si-enteredby').value;
+  } else {
+    const r = db.stockOut[idx];
+    if (!r) return;
+    const itemType = document.getElementById('e-so-itemtype').value.trim();
+    const qty      = Number(document.getElementById('e-so-qty').value);
+    const issuedTo = document.getElementById('e-so-issuedto').value.trim();
+    if (!itemType || !qty || qty <= 0 || !issuedTo) { showToast('Item Type, Quantity & Issued To are required', true); return; }
+    r.date      = document.getElementById('e-so-date').value;
+    r.itemType  = itemType;
+    r.qty       = qty;
+    r.issuedTo  = issuedTo;
+    r.notes     = document.getElementById('e-so-notes').value.trim();
+    r.enteredBy = document.getElementById('e-so-enteredby').value;
+  }
+  closeModal(); showToast('✅ Stock entry updated!');
+  renderOverview(); renderStock(); saveDb();
 }
 
 /* ============================================================
@@ -2311,10 +2811,12 @@ let _clearTarget = null;
 
 function openClearModal(logType) {
   _clearTarget = { logType, scope: 'all', months: [] };
-  const logData = logType === 'dispatch' ? db.dispatch : db.returns;
+  const logData = logType === 'dispatch' ? db.dispatch
+                : logType === 'stock'    ? [...db.stockIn, ...db.stockOut]
+                : db.returns;
   const allMonths = [...new Set(logData.map(d=>monthKey(d.date)))].filter(Boolean).sort((a,b)=>new Date('1 '+a)-new Date('1 '+b));
 
-  document.getElementById('pw-title').innerHTML = logType==='dispatch' ? '🗑 Clear Dispatch Log' : '🗑 Clear Return Log';
+  document.getElementById('pw-title').innerHTML = logType==='dispatch' ? '🗑 Clear Dispatch Log' : logType==='stock' ? '🗑 Clear Stock Log' : '🗑 Clear Return Log';
   document.getElementById('pw-body').innerHTML = `
     <div class="warn-box">⚠️ Cleared records cannot be recovered. Please choose carefully.</div>
     <div class="section-label">What to clear</div>
@@ -2386,12 +2888,20 @@ function executeClear() {
   if (logType === 'dispatch') {
     if (scope==='all') { cleared=db.dispatch.length; db.dispatch=[]; }
     else { const b=db.dispatch.length; db.dispatch=db.dispatch.filter(d=>!months.includes(monthKey(d.date))); cleared=b-db.dispatch.length; }
+  } else if (logType === 'stock') {
+    if (scope==='all') { cleared=db.stockIn.length+db.stockOut.length; db.stockIn=[]; db.stockOut=[]; }
+    else {
+      const b=db.stockIn.length+db.stockOut.length;
+      db.stockIn  = db.stockIn.filter(r=>!months.includes(monthKey(r.date)));
+      db.stockOut = db.stockOut.filter(r=>!months.includes(monthKey(r.date)));
+      cleared = b - (db.stockIn.length+db.stockOut.length);
+    }
   } else {
     if (scope==='all') { cleared=db.returns.length; db.returns=[]; }
     else { const b=db.returns.length; db.returns=db.returns.filter(r=>!months.includes(monthKey(r.date))); cleared=b-db.returns.length; }
   }
   closePwModal(); renderOverview();
-  if (logType==='dispatch') renderDispatch(); else renderReturns();
+  if (logType==='dispatch') renderDispatch(); else if (logType==='stock') renderStock(); else renderReturns();
   showToast(`🗑 ${cleared} record${cleared!==1?'s':''} cleared`); saveDb();
 }
 
@@ -2420,13 +2930,23 @@ document.addEventListener('keydown', function(e) {
   if (e.key==='Escape') closeRowPwPrompt();
 });
 
+function getLogArray(logType) {
+  if (logType === 'dispatch') return db.dispatch;
+  if (logType === 'return')   return db.returns;
+  if (logType === 'stockin')  return db.stockIn;
+  if (logType === 'stockout') return db.stockOut;
+  return [];
+}
+
 function confirmRowDelete(logType, idx, btn) {
   closeRowPwPrompt();
-  const record = logType==='dispatch' ? db.dispatch[idx] : db.returns[idx];
+  const record = getLogArray(logType)[idx];
   if (!record) return;
-  const label = record.tech + ' · ' + (record.tid || record.serial);
+  const label = logType==='stockin'  ? `${record.itemType} · ${record.qty} from ${record.source}`
+              : logType==='stockout' ? `${record.itemType} · ${record.qty} to ${record.issuedTo}`
+              : record.tech + ' · ' + (record.tid || record.serial);
   const tr = btn.closest('tr');
-  const colCount = logType==='dispatch' ? 12 : 11;
+  const colCount = logType==='dispatch' ? 12 : logType==='stockin' || logType==='stockout' ? 8 : 11;
   const pr = document.createElement('tr');
   pr.className = 'row-pw-row'; pr.id = 'row-pw-prompt';
   pr.innerHTML = `<td colspan="${colCount}"><div class="row-pw-inner">
@@ -2448,11 +2968,13 @@ function closeRowPwPrompt() {
 function executeRowDelete() {
   if (!_rowDelTarget) return;
   const { logType, idx } = _rowDelTarget;
-  const arr   = logType==='dispatch' ? db.dispatch : db.returns;
-  const label = arr[idx] ? (arr[idx].tid || arr[idx].serial) : 'record';
+  const arr   = getLogArray(logType);
+  const label = arr[idx] ? (arr[idx].tid || arr[idx].serial || arr[idx].itemType) : 'record';
   arr.splice(idx, 1);
   closeRowPwPrompt(); renderOverview();
-  if (logType==='dispatch') renderDispatch(); else renderReturns();
+  if (logType==='dispatch') renderDispatch();
+  else if (logType==='stockin' || logType==='stockout') renderStock();
+  else renderReturns();
   showToast('🗑 Deleted: ' + label); saveDb();
 }
 
@@ -2675,6 +3197,14 @@ function openExportModal() {
         <input type="checkbox" id="exp-staff" checked onchange="document.getElementById('card-staff').classList.toggle('selected',this.checked);updateExportPreview()">
         <div><div class="export-sheet-label">👥 Staff List</div><div class="export-sheet-sub" id="exp-staff-sub">— members</div></div>
       </label>
+      <label class="export-sheet-card selected" id="card-stock">
+        <input type="checkbox" id="exp-stock" checked onchange="document.getElementById('card-stock').classList.toggle('selected',this.checked);updateExportPreview()">
+        <div><div class="export-sheet-label">📦 Stock Ledger</div><div class="export-sheet-sub" id="exp-stock-sub">— records</div></div>
+      </label>
+      <label class="export-sheet-card selected" id="card-stockbal">
+        <input type="checkbox" id="exp-stockbal" checked onchange="document.getElementById('card-stockbal').classList.toggle('selected',this.checked);updateExportPreview()">
+        <div><div class="export-sheet-label">📊 Stock Balance</div><div class="export-sheet-sub">Per item type</div></div>
+      </label>
     </div>
     <div class="export-preview" id="export-preview">Calculating…</div>
     <div class="modal-actions">
@@ -2692,8 +3222,10 @@ function getExportFiltered() {
   const to   = document.getElementById('exp-to').value;
   return {
     from, to,
-    dRows: db.dispatch.filter(d => (!from||d.date>=from) && (!to||d.date<=to)),
-    rRows: db.returns.filter(r  => (!from||r.date>=from) && (!to||r.date<=to)),
+    dRows:  db.dispatch.filter(d => (!from||d.date>=from) && (!to||d.date<=to)),
+    rRows:  db.returns.filter(r  => (!from||r.date>=from) && (!to||r.date<=to)),
+    siRows: db.stockIn.filter(s  => (!from||s.date>=from) && (!to||s.date<=to)),
+    soRows: db.stockOut.filter(s => (!from||s.date>=from) && (!to||s.date<=to)),
   };
 }
 
@@ -2702,9 +3234,11 @@ function updateExportPreview() {
   document.getElementById('exp-dispatch-sub').textContent = f.dRows.length + ' records';
   document.getElementById('exp-returns-sub').textContent  = f.rRows.length + ' records';
   document.getElementById('exp-staff-sub').textContent    = db.staff.length + ' members';
+  document.getElementById('exp-stock-sub').textContent    = (f.siRows.length+f.soRows.length) + ' records';
   const total  = (document.getElementById('exp-dispatch').checked ? f.dRows.length : 0)
-               + (document.getElementById('exp-returns').checked  ? f.rRows.length : 0);
-  const sheets = ['exp-dispatch','exp-returns','exp-outstanding','exp-staff'].filter(id=>document.getElementById(id).checked).length;
+               + (document.getElementById('exp-returns').checked  ? f.rRows.length : 0)
+               + (document.getElementById('exp-stock').checked    ? (f.siRows.length+f.soRows.length) : 0);
+  const sheets = ['exp-dispatch','exp-returns','exp-outstanding','exp-staff','exp-stock','exp-stockbal'].filter(id=>document.getElementById(id).checked).length;
   document.getElementById('export-preview').innerHTML =
     `Exporting <span>${total} records</span> across <span>${sheets} sheet${sheets!==1?'s':''}</span>` +
     (f.from && f.to ? ` &nbsp;·&nbsp; <span>${fmtDate(f.from)} → ${fmtDate(f.to)}</span>` : ' &nbsp;·&nbsp; All dates');
@@ -2753,6 +3287,22 @@ function doExport() {
     addSheet('STAFF LIST',
       ['#','Name','Role','Area / Region','Contact','Email','Status'],
       db.staff.map(s => [s.id,s.name,s.role,s.area,s.contact||'',s.email||'',s.active])
+    );
+  }
+  if (document.getElementById('exp-stock').checked) {
+    const stockRows = [
+      ...f.siRows.map(s => [s.date,'IN', s.itemType,s.qty,s.source,'',s.notes,s.enteredBy]),
+      ...f.soRows.map(s => [s.date,'OUT',s.itemType,s.qty,'',s.issuedTo,s.notes,s.enteredBy]),
+    ].sort((a,b)=>String(a[0]||'').localeCompare(String(b[0]||'')));
+    addSheet('STOCK LEDGER',
+      ['Date','Movement','Item Type','Quantity','Source / Supplier','Issued To','Notes','Entered By'],
+      stockRows
+    );
+  }
+  if (document.getElementById('exp-stockbal').checked) {
+    addSheet('STOCK BALANCE',
+      ['Item Type','Total Received','Total Issued','Balance','Status'],
+      computeStockBalances().map(b => [b.itemType,b.received,b.issued,b.balance,b.balance<LOW_STOCK_THRESHOLD?'LOW STOCK':'OK'])
     );
   }
   if (!wb.SheetNames.length) { showToast('Select at least one sheet to export', true); return; }
