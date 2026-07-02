@@ -244,6 +244,28 @@ header {
 .btn-export:hover { background: rgba(0,212,170,0.08); transform: translateY(-1px); }
 .btn-pdf { background: var(--surface2); color: #e05c2a; border: 1px solid rgba(224,92,42,0.35); }
 .btn-pdf:hover { background: rgba(224,92,42,0.08); transform: translateY(-1px); }
+.btn-backup { background: var(--surface2); color: #a78bfa; border: 1px solid rgba(167,139,250,0.35); }
+.btn-backup:hover { background: rgba(167,139,250,0.08); transform: translateY(-1px); }
+.btn-view-backup { background: var(--surface2); color: #3b7ff5; border: 1px solid rgba(59,127,245,0.35); }
+.btn-view-backup:hover { background: rgba(59,127,245,0.08); transform: translateY(-1px); }
+.bkv-summary { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:16px; }
+.bkv-stat { flex:1; min-width:110px; background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:12px 14px; }
+.bkv-stat-val { font-size:20px; font-weight:700; color:var(--text); font-family:'DM Mono',monospace; }
+.bkv-stat-lbl { font-size:10.5px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px; margin-top:2px; }
+.bkv-tabs { display:flex; gap:6px; margin-bottom:14px; flex-wrap:wrap; }
+.bkv-tab { padding:7px 14px; border-radius:8px; border:1px solid var(--border); background:var(--surface2); color:var(--text-muted); font-size:12px; font-weight:600; cursor:pointer; transition:var(--transition); }
+.bkv-tab.active { background:var(--accent); color:#04120e; border-color:var(--accent); }
+.bkv-table-wrap { max-height:420px; overflow:auto; border:1px solid var(--table-border); border-radius:10px; }
+.bkv-table { width:100%; border-collapse:collapse; font-size:11.5px; }
+.bkv-table th { position:sticky; top:0; background:var(--surface3); color:var(--text-dim); text-align:left; padding:8px 10px; font-size:10px; text-transform:uppercase; letter-spacing:0.5px; border-bottom:1px solid var(--table-border); }
+.bkv-table td { padding:7px 10px; border-bottom:1px solid var(--table-border); color:var(--text); white-space:nowrap; }
+.bkv-table tr:hover td { background:var(--table-hover); }
+.bkv-empty { text-align:center; color:var(--text-dim); padding:24px; font-size:12px; }
+.bkv-filter-bar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:12px; }
+.bkv-search { flex:1; min-width:180px; background:var(--input-bg); border:1px solid var(--border); border-radius:9px; padding:8px 12px; color:var(--text); font-family:'Sora',sans-serif; font-size:12px; outline:none; }
+.bkv-search:focus { border-color:var(--accent); }
+.bkv-filter-select { background:var(--input-bg); border:1px solid var(--border); border-radius:9px; padding:8px 10px; color:var(--text); font-size:11.5px; outline:none; }
+.bkv-filter-count { font-size:11px; color:var(--text-dim); white-space:nowrap; font-family:'DM Mono',monospace; }
 .btn-sm { padding: 6px 13px; font-size: 11px; }
 .btn-xs { padding: 4px 9px; font-size: 10px; }
 
@@ -1108,6 +1130,9 @@ header {
       </div>
       <button class="btn btn-export btn-sm" onclick="openExportModal()">⬇ Export Excel</button>
       <button class="btn btn-pdf btn-sm" onclick="openPdfModal()">📄 Export PDF</button>
+      <button class="btn btn-backup btn-sm" onclick="downloadBackup()" title="Save a backup file to your computer">💾 Backup</button>
+      <button class="btn btn-view-backup btn-sm" onclick="triggerViewBackup()" title="Open and view a saved backup file">👁 View Backup</button>
+      <input type="file" id="backup-file-input" accept="application/json,.json" style="display:none" onchange="handleViewBackupFile(event)">
       <div class="date-badge" id="date-badge"></div>
     </div>
   </header>
@@ -1343,6 +1368,17 @@ header {
   </div>
 </div>
 
+<!-- ============================================================
+     VIEW BACKUP MODAL
+     ============================================================ -->
+<div class="modal-overlay" id="bkv-overlay" onclick="if(event.target===this)closeBackupView()">
+  <div class="modal" style="width:900px">
+    <button class="modal-close" onclick="closeBackupView()">✕</button>
+    <div class="modal-title">👁 Viewing Backup File</div>
+    <div id="bkv-body"></div>
+  </div>
+</div>
+
 <!-- Hidden PDF Print Frame -->
 <div id="pdf-print-frame" style="display:none"></div>
 <div class="modal-overlay" id="modal-overlay" onclick="if(event.target===this)closeModal()">
@@ -1448,6 +1484,234 @@ function initDb() {
       }
     }, 100);
   }
+}
+
+/* ============================================================
+   LOCAL BACKUP / RESTORE
+   ============================================================ */
+// Save the entire db to a JSON file on the user's own computer.
+function downloadBackup() {
+  const payload = {
+    _backupType: 'CBA_TERMINAL_TRACKER_BACKUP',
+    _version: 1,
+    exportedAt: new Date().toISOString(),
+    staff:    db.staff,
+    dispatch: db.dispatch,
+    returns:  db.returns,
+    nextId:   db.nextId,
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const url  = URL.createObjectURL(blob);
+  const now  = new Date();
+  const pad  = n => String(n).padStart(2,'0');
+  const fname = `CBA-Backup_${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}.json`;
+
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fname;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+
+  showToast('💾 Backup saved: ' + fname);
+}
+
+// Open the file picker so the user can choose a backup file to view.
+function triggerViewBackup() {
+  document.getElementById('backup-file-input').value = '';
+  document.getElementById('backup-file-input').click();
+}
+
+// Read the chosen file, validate it, then display its contents (read-only — never touches live data).
+function handleViewBackupFile(event) {
+  const file = event.target.files && event.target.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = () => {
+    let data;
+    try {
+      data = JSON.parse(reader.result);
+    } catch (e) {
+      showToast('⚠️ That file is not a valid backup (bad JSON)', true);
+      return;
+    }
+    if (!data || !Array.isArray(data.staff) || !Array.isArray(data.dispatch) || !Array.isArray(data.returns)) {
+      showToast('⚠️ That file is not a valid CBA Terminal Tracker backup', true);
+      return;
+    }
+    renderBackupView(data, file.name);
+  };
+  reader.onerror = () => showToast('⚠️ Could not read that file', true);
+  reader.readAsText(file);
+}
+
+let _bkvData = null;
+let _bkvTab = 'dispatch';
+let _bkvSearch = '';
+let _bkvStatus = 'all';
+let _bkvTech = 'all';
+
+// Render a read-only viewer for a backup file's contents: summary + tabbed, searchable/filterable tables.
+function renderBackupView(data, fileName) {
+  _bkvData = data;
+  const when = data.exportedAt ? fmtDate(data.exportedAt) + ' ' + new Date(data.exportedAt).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}) : 'Unknown';
+  document.getElementById('bkv-body').innerHTML = `
+    <p style="color:var(--text-muted);font-size:12px;margin-bottom:14px;font-family:'DM Mono',monospace">${esc(fileName||'')} &nbsp;·&nbsp; Backup date: ${esc(when)}</p>
+    <div class="bkv-summary">
+      <div class="bkv-stat"><div class="bkv-stat-val">${data.staff.length}</div><div class="bkv-stat-lbl">Staff</div></div>
+      <div class="bkv-stat"><div class="bkv-stat-val">${data.dispatch.length}</div><div class="bkv-stat-lbl">Dispatch</div></div>
+      <div class="bkv-stat"><div class="bkv-stat-val">${data.returns.length}</div><div class="bkv-stat-lbl">Returns</div></div>
+    </div>
+    <div class="bkv-tabs">
+      <button class="bkv-tab active" id="bkv-tab-dispatch" onclick="switchBkvTab('dispatch')">📤 Dispatch</button>
+      <button class="bkv-tab" id="bkv-tab-returns" onclick="switchBkvTab('returns')">📥 Returns</button>
+      <button class="bkv-tab" id="bkv-tab-staff" onclick="switchBkvTab('staff')">👥 Staff</button>
+    </div>
+    <div id="bkv-filter-area"></div>
+    <div id="bkv-table-area"></div>`;
+  switchBkvTab('dispatch');
+  document.getElementById('bkv-overlay').classList.add('open');
+}
+
+// Compute status for a dispatch item against a given backup's own returns array (not the live db).
+function bkvGetStatus(item, returnsArr) {
+  if (returnsArr.find(r => (item.tid && r.tid === item.tid) || (item.serial && r.serial === item.serial))) return 'RETURNED';
+  const t = new Date(); t.setHours(0,0,0,0);
+  if (!item.dueDate) return 'PENDING';
+  return new Date(item.dueDate) < t ? 'OVERDUE' : 'PENDING';
+}
+
+function bkvStatusPill(status) {
+  const cls = status === 'RETURNED' ? 'pill-clear' : status === 'OVERDUE' ? 'pill-overdue' : 'pill-pending';
+  return `<span class="pill ${cls}">${status}</span>`;
+}
+
+function switchBkvTab(which) {
+  _bkvTab = which;
+  _bkvSearch = ''; _bkvStatus = 'all'; _bkvTech = 'all';
+  ['dispatch','returns','staff'].forEach(t => document.getElementById('bkv-tab-'+t).classList.toggle('active', t===which));
+  renderBkvFilterBar();
+  renderBkvTable();
+}
+
+// Build the search box + relevant dropdown filters for the active tab.
+function renderBkvFilterBar() {
+  const data = _bkvData;
+  const area = document.getElementById('bkv-filter-area');
+  if (!data) return;
+
+  let techOptions = '';
+  let statusOptions = '';
+  if (_bkvTab === 'dispatch' || _bkvTab === 'returns') {
+    const rows = data[_bkvTab] || [];
+    const techs = [...new Set(rows.map(r => r.tech).filter(Boolean))].sort();
+    techOptions = `<select class="bkv-filter-select" id="bkv-tech-filter" onchange="bkvOnFilterChange()">
+      <option value="all">All Technicians</option>
+      ${techs.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join('')}
+    </select>`;
+  }
+  if (_bkvTab === 'dispatch') {
+    statusOptions = `<select class="bkv-filter-select" id="bkv-status-filter" onchange="bkvOnFilterChange()">
+      <option value="all">All Statuses</option>
+      <option value="PENDING">Pending</option>
+      <option value="OVERDUE">Overdue</option>
+      <option value="RETURNED">Returned</option>
+    </select>`;
+  } else if (_bkvTab === 'staff') {
+    statusOptions = `<select class="bkv-filter-select" id="bkv-status-filter" onchange="bkvOnFilterChange()">
+      <option value="all">All Staff</option>
+      <option value="YES">Active only</option>
+      <option value="NO">Inactive only</option>
+    </select>`;
+  }
+
+  area.innerHTML = `
+    <div class="bkv-filter-bar">
+      <input type="text" class="bkv-search" id="bkv-search-input" placeholder="🔍 Search ${_bkvTab}..." oninput="bkvOnFilterChange()">
+      ${techOptions}
+      ${statusOptions}
+      <span class="bkv-filter-count" id="bkv-filter-count"></span>
+    </div>`;
+}
+
+function bkvOnFilterChange() {
+  const searchEl  = document.getElementById('bkv-search-input');
+  const statusEl  = document.getElementById('bkv-status-filter');
+  const techEl    = document.getElementById('bkv-tech-filter');
+  _bkvSearch = searchEl ? searchEl.value.trim().toLowerCase() : '';
+  _bkvStatus = statusEl ? statusEl.value : 'all';
+  _bkvTech   = techEl ? techEl.value : 'all';
+  renderBkvTable();
+}
+
+// Does any field on this row contain the search term?
+function bkvMatchesSearch(row, fields) {
+  if (!_bkvSearch) return true;
+  return fields.some(f => String(row[f]||'').toLowerCase().includes(_bkvSearch));
+}
+
+function renderBkvTable() {
+  const data = _bkvData;
+  const area = document.getElementById('bkv-table-area');
+  const countEl = document.getElementById('bkv-filter-count');
+  if (!data) return;
+
+  if (_bkvTab === 'dispatch') {
+    let rows = data.dispatch || [];
+    const total = rows.length;
+    if (_bkvTech !== 'all') rows = rows.filter(d => d.tech === _bkvTech);
+    if (_bkvStatus !== 'all') rows = rows.filter(d => bkvGetStatus(d, data.returns||[]) === _bkvStatus);
+    rows = rows.filter(d => bkvMatchesSearch(d, ['tid','serial','merchant','tech','itemType','description','enteredBy']));
+    if (countEl) countEl.textContent = `${rows.length} of ${total}`;
+    area.innerHTML = !rows.length
+      ? `<div class="bkv-empty">No dispatch records match your search/filter</div>`
+      : `<div class="bkv-table-wrap"><table class="bkv-table">
+          <thead><tr><th>Date</th><th>TID / Serial</th><th>Merchant</th><th>Serial No.</th><th>Technician</th><th>Item Type</th><th>Description</th><th>Due Date</th><th>Status</th><th>Entered By</th></tr></thead>
+          <tbody>${rows.map(d => `<tr>
+            <td>${fmtDate(d.date)}</td><td>${esc(d.tid||d.serial||'—')}</td><td>${esc(d.merchant||'—')}</td>
+            <td>${esc(d.serial||'—')}</td><td>${esc(d.tech||'—')}</td><td>${esc(d.itemType||'—')}</td>
+            <td>${esc(d.description||'—')}</td><td>${fmtDate(d.dueDate)}</td><td>${bkvStatusPill(bkvGetStatus(d, data.returns||[]))}</td><td>${esc(d.enteredBy||'—')}</td>
+          </tr>`).join('')}</tbody>
+        </table></div>`;
+  } else if (_bkvTab === 'returns') {
+    let rows = data.returns || [];
+    const total = rows.length;
+    if (_bkvTech !== 'all') rows = rows.filter(r => r.tech === _bkvTech);
+    rows = rows.filter(r => bkvMatchesSearch(r, ['tid','serial','merchant','tech','itemType','condition','remarks','enteredBy']));
+    if (countEl) countEl.textContent = `${rows.length} of ${total}`;
+    area.innerHTML = !rows.length
+      ? `<div class="bkv-empty">No return records match your search/filter</div>`
+      : `<div class="bkv-table-wrap"><table class="bkv-table">
+          <thead><tr><th>Return Date</th><th>TID / Serial</th><th>Merchant</th><th>Serial No.</th><th>Technician</th><th>Item Type</th><th>Condition</th><th>Remarks</th><th>Entered By</th></tr></thead>
+          <tbody>${rows.map(r => `<tr>
+            <td>${fmtDate(r.date)}</td><td>${esc(r.tid||r.serial||'—')}</td><td>${esc(r.merchant||'—')}</td>
+            <td>${esc(r.serial||'—')}</td><td>${esc(r.tech||'—')}</td><td>${esc(r.itemType||'—')}</td>
+            <td>${esc(r.condition||'—')}</td><td>${esc(r.remarks||'—')}</td><td>${esc(r.enteredBy||'—')}</td>
+          </tr>`).join('')}</tbody>
+        </table></div>`;
+  } else {
+    let rows = data.staff || [];
+    const total = rows.length;
+    if (_bkvStatus !== 'all') rows = rows.filter(s => s.active === _bkvStatus);
+    rows = rows.filter(s => bkvMatchesSearch(s, ['name','role','area','contact','email']));
+    if (countEl) countEl.textContent = `${rows.length} of ${total}`;
+    area.innerHTML = !rows.length
+      ? `<div class="bkv-empty">No staff records match your search/filter</div>`
+      : `<div class="bkv-table-wrap"><table class="bkv-table">
+          <thead><tr><th>Name</th><th>Role</th><th>Area / Region</th><th>Contact</th><th>Email</th><th>Status</th></tr></thead>
+          <tbody>${rows.map(s => `<tr>
+            <td>${esc(s.name)}</td><td>${esc(s.role||'—')}</td><td>${esc(s.area||'—')}</td>
+            <td>${esc(s.contact||'—')}</td><td>${esc(s.email||'—')}</td><td>${s.active==='YES'?'Active':'Inactive'}</td>
+          </tr>`).join('')}</tbody>
+        </table></div>`;
+  }
+}
+
+function closeBackupView() {
+  document.getElementById('bkv-overlay').classList.remove('open');
+  _bkvData = null;
 }
 
 /* ============================================================
@@ -3125,7 +3389,7 @@ updateClock(); setInterval(updateClock, 30000);
    KEYBOARD SHORTCUTS
    ============================================================ */
 document.addEventListener('keydown', function(e) {
-  if (e.key === 'Escape') { closeModal(); closePwModal(); closeExportModal(); closePdfModal(); closeRowPwPrompt(); }
+  if (e.key === 'Escape') { closeModal(); closePwModal(); closeExportModal(); closePdfModal(); closeRowPwPrompt(); closeBackupView(); }
 });
 
 /* ============================================================
