@@ -66,16 +66,15 @@
     if (!snap.exists() || !window._dbReady) return;
     const remote = snap.data();
     // Only apply if it differs from local (avoid echo of own saves)
-    if (JSON.stringify(remote) === JSON.stringify({staff: db.staff, dispatch: db.dispatch, returns: db.returns, stockIn: db.stockIn, stockOut: db.stockOut, nextId: db.nextId})) return;
+    if (JSON.stringify(remote) === JSON.stringify({staff: db.staff, dispatch: db.dispatch, returns: db.returns, stock: db.stock, nextId: db.nextId})) return;
     db.staff    = remote.staff    || [];
     db.dispatch = remote.dispatch || [];
     db.returns  = remote.returns  || [];
-    db.stockIn  = remote.stockIn  || [];
-    db.stockOut = remote.stockOut || [];
+    db.stock    = remote.stock    || [];
     db.nextId   = remote.nextId   || 1;
     renderOverview();
     renderDispatch();
-    if (document.getElementById('tab-stock')?.classList.contains('active')) renderStock();
+    if (typeof renderStock === 'function') renderStock();
     showToast("🔄 Data synced from cloud");
   });
 
@@ -1120,10 +1119,10 @@ header {
        ====================================================== -->
   <div class="nav-tabs">
     <button class="tab-btn active" onclick="switchTab('overview',this)">📊 Overview</button>
+    <button class="tab-btn" onclick="switchTab('stock',this)">📦 Stock</button>
     <button class="tab-btn" onclick="switchTab('dispatch',this)">📤 Dispatch Log</button>
     <button class="tab-btn" onclick="switchTab('returns',this)">📥 Return Log</button>
     <button class="tab-btn" onclick="switchTab('outstanding',this)">⚠️ Outstanding</button>
-    <button class="tab-btn" onclick="switchTab('stock',this)">📦 Stock</button>
     <button class="tab-btn" onclick="switchTab('staff',this)">👥 Staff</button>
   </div>
 
@@ -1211,13 +1210,73 @@ header {
         <div id="desc-breakdown"></div>
       </div>
     </div>
+  </div>
+
+  <!-- ======================================================
+       STOCK TAB
+       ====================================================== -->
+  <div id="tab-stock" class="view">
+    <div class="kpi-grid">
+      <div class="kpi-card blue">
+        <div class="kpi-label">Total Received</div>
+        <div class="kpi-value" id="stock-kpi-received">0</div>
+        <div class="kpi-sub">Units received into stock</div>
+      </div>
+      <div class="kpi-card teal">
+        <div class="kpi-label">Total Issued</div>
+        <div class="kpi-value" id="stock-kpi-issued">0</div>
+        <div class="kpi-sub">Units dispatched to technicians</div>
+      </div>
+      <div class="kpi-card success">
+        <div class="kpi-label">In Hand</div>
+        <div class="kpi-value" id="stock-kpi-balance">0</div>
+        <div class="kpi-sub">Current stock balance</div>
+      </div>
+      <div class="kpi-card danger">
+        <div class="kpi-label">Low Stock Types</div>
+        <div class="kpi-value" id="stock-kpi-low">0</div>
+        <div class="kpi-sub" id="stock-kpi-low-sub">Below 10 units</div>
+      </div>
+    </div>
 
     <div class="card" style="margin-bottom:20px">
       <div class="card-header">
-        <div class="card-title">📦 Stock Snapshot</div>
-        <span class="card-badge badge-teal" id="ov-stock-badge">0 IN HAND</span>
+        <div class="card-title">📊 Stock Balance by Item Type</div>
+        <span class="card-badge badge-blue" id="stock-balance-badge">0 TYPES</span>
       </div>
-      <div class="card-body" id="ov-stock-snapshot"></div>
+      <div style="overflow-x:auto">
+        <table class="data-table">
+          <thead>
+            <tr><th>Item Type</th><th>Received</th><th>Issued</th><th>Balance</th><th>Status</th></tr>
+          </thead>
+          <tbody id="stock-balance-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="action-bar">
+      <input class="search-input" id="stock-search" type="text" placeholder="🔍  Search item type, source, notes…" oninput="renderStock()">
+      <select class="filter-select" id="stock-filter-item" onchange="renderStock()"><option value="">All Item Types</option></select>
+      <select class="filter-select" id="stock-filter-month" onchange="renderStock()"><option value="">All Months</option></select>
+      <button class="btn btn-primary btn-sm" onclick="openEntryModal('stock')">＋ Receive Stock</button>
+      <button class="btn btn-danger-outline btn-sm" onclick="openClearModal('stock')">🗑 Clear Log</button>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">📦 Stock Receipt Log</div>
+        <span class="card-badge badge-success" id="stock-count-badge">0 RECORDS</span>
+      </div>
+      <div style="overflow-x:auto">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Date</th><th>Item Type</th><th>Quantity</th><th>Source / Store</th>
+              <th>Notes</th><th>Entered By</th><th></th>
+            </tr>
+          </thead>
+          <tbody id="stock-tbody"></tbody>
+        </table>
+      </div>
     </div>
   </div>
 
@@ -1295,88 +1354,6 @@ header {
   <div id="tab-outstanding" class="view">
     <div id="outstanding-kpi" class="kpi-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:24px;"></div>
     <div class="tech-grid" id="tech-cards"></div>
-  </div>
-
-  <!-- ======================================================
-       STOCK TAB
-       ====================================================== -->
-  <div id="tab-stock" class="view">
-    <div class="kpi-grid">
-      <div class="kpi-card teal">
-        <div class="kpi-label">Total Received</div>
-        <div class="kpi-value" id="stock-kpi-in">0</div>
-        <div class="kpi-sub">Units received (all time)</div>
-      </div>
-      <div class="kpi-card blue">
-        <div class="kpi-label">Total Issued</div>
-        <div class="kpi-value" id="stock-kpi-out">0</div>
-        <div class="kpi-sub">Units issued to staff</div>
-      </div>
-      <div class="kpi-card success">
-        <div class="kpi-label">In Hand</div>
-        <div class="kpi-value" id="stock-kpi-balance">0</div>
-        <div class="kpi-sub">Current total balance</div>
-      </div>
-      <div class="kpi-card warn">
-        <div class="kpi-label">Item Types</div>
-        <div class="kpi-value" id="stock-kpi-types">0</div>
-        <div class="kpi-sub">Distinct items tracked</div>
-      </div>
-      <div class="kpi-card danger">
-        <div class="kpi-label">Low Stock</div>
-        <div class="kpi-value" id="stock-kpi-low">0</div>
-        <div class="kpi-sub" id="stock-kpi-low-sub">Below 10 units</div>
-      </div>
-    </div>
-
-    <div class="action-bar">
-      <input class="search-input" id="stock-search" type="text" placeholder="🔍  Search item type, source, issued to…" oninput="renderStock()">
-      <select class="filter-select" id="stock-filter-type" onchange="renderStock()"><option value="">All Item Types</option></select>
-      <select class="filter-select" id="stock-filter-move" onchange="renderStock()">
-        <option value="">All Movements</option>
-        <option value="IN">📥 Stock In</option>
-        <option value="OUT">📤 Stock Out</option>
-      </select>
-      <select class="filter-select" id="stock-filter-month" onchange="renderStock()"><option value="">All Months</option></select>
-      <button class="btn btn-primary btn-sm" onclick="openStockModal('in')">＋ Stock In</button>
-      <button class="btn btn-primary btn-sm" onclick="openStockModal('out')">＋ Stock Out</button>
-      <button class="btn btn-danger-outline btn-sm" onclick="openClearModal('stock')">🗑 Clear Log</button>
-    </div>
-
-    <div id="stock-low-alert"></div>
-
-    <div class="card" style="margin-bottom:20px">
-      <div class="card-header">
-        <div class="card-title">📊 Stock Balance by Item Type</div>
-        <span class="card-badge badge-teal" id="stock-balance-badge">0 TYPES</span>
-      </div>
-      <div style="overflow-x:auto">
-        <table class="data-table">
-          <thead>
-            <tr><th>Item Type</th><th>Received</th><th>Issued</th><th>Balance</th><th>Status</th></tr>
-          </thead>
-          <tbody id="stock-balance-tbody"></tbody>
-        </table>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="card-header">
-        <div class="card-title">📦 Stock Movement Ledger</div>
-        <span class="card-badge badge-blue" id="stock-count-badge">0 RECORDS</span>
-      </div>
-      <div style="overflow-x:auto">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>Date</th><th>Movement</th><th>Item Type</th><th>Qty</th><th>Source / Issued To</th>
-              <th>Notes</th><th>Entered By</th><th></th>
-            </tr>
-          </thead>
-          <tbody id="stock-tbody"></tbody>
-        </table>
-      </div>
-    </div>
   </div>
 
   <!-- ======================================================
@@ -1489,11 +1466,11 @@ const db = {
   staff:    [],
   dispatch: [],
   returns:  [],
-  stockIn:  [],   // bulk stock received: {date, itemType, qty, source, notes, enteredBy}
-  stockOut: [],   // bulk stock issued:   {date, itemType, qty, issuedTo, notes, enteredBy}
+  stock:    [],
   nextId: 1,
 };
 
+// Minimum balance before an item type is flagged "Low Stock" in the Stock tab
 const LOW_STOCK_THRESHOLD = 10;
 
 // Flag used by the real-time listener to avoid acting before init
@@ -1506,8 +1483,7 @@ async function saveDb() {
       staff:    db.staff,
       dispatch: db.dispatch,
       returns:  db.returns,
-      stockIn:  db.stockIn,
-      stockOut: db.stockOut,
+      stock:    db.stock,
       nextId:   db.nextId,
     });
   }
@@ -1521,14 +1497,14 @@ async function loadDb() {
       db.staff    = data.staff    || [];
       db.dispatch = data.dispatch || [];
       db.returns  = data.returns  || [];
-      db.stockIn  = data.stockIn  || [];
-      db.stockOut = data.stockOut || [];
+      db.stock    = data.stock    || [];
       db.nextId   = data.nextId   || 1;
     }
   }
   window._dbReady = true;
   renderOverview();
   renderDispatch();
+  renderStock();
   document.getElementById('loading-overlay').style.display = 'none';
 }
 
@@ -1629,8 +1605,8 @@ function switchTab(tab, btn) {
   if (tab === 'dispatch')    renderDispatch();
   else if (tab === 'returns')    renderReturns();
   else if (tab === 'outstanding') renderOutstanding();
-  else if (tab === 'stock')       renderStock();
   else if (tab === 'staff')       renderStaff();
+  else if (tab === 'stock')       renderStock();
   else if (tab === 'overview')    renderOverview();
 }
 
@@ -1810,32 +1786,6 @@ function renderOverview() {
         </table>
       </div>`;
   }
-
-  // Stock snapshot
-  const bal = computeStockBalances();
-  const balTot = bal.reduce((s,b)=>s+b.balance, 0);
-  document.getElementById('ov-stock-badge').textContent = balTot + ' IN HAND';
-  if (!bal.length) {
-    document.getElementById('ov-stock-snapshot').innerHTML =
-      '<div class="empty-state" style="padding:20px 0"><div class="icon">📦</div><p>No stock movements logged yet</p></div>';
-  } else {
-    const snapRows = bal.slice(0,8).map((b,i) => {
-      const col = COLORS[i % COLORS.length];
-      const low = b.balance < LOW_STOCK_THRESHOLD;
-      return `<tr>
-        <td><div class="item-dot-name"><div class="item-color-dot" style="background:${col}"></div><span class="item-name-text">${esc(b.itemType)}</span></div></td>
-        <td style="text-align:center" class="mono">${b.received}</td>
-        <td style="text-align:center" class="mono">${b.issued}</td>
-        <td style="text-align:center"><span class="mono" style="font-weight:700;color:${low?'var(--danger)':'var(--success)'}">${b.balance}</span></td>
-        <td style="text-align:right"><span class="pill ${low?'pill-overdue':'pill-clear'}">${low?'🔴 LOW':'✅ OK'}</span></td>
-      </tr>`;
-    }).join('');
-    document.getElementById('ov-stock-snapshot').innerHTML = `
-      <table class="item-type-table">
-        <thead><tr><th>Item Type</th><th style="text-align:center">Received</th><th style="text-align:center">Issued</th><th style="text-align:center">Balance</th><th style="text-align:right">Status</th></tr></thead>
-        <tbody>${snapRows}</tbody>
-      </table>`;
-  }
 }
 
 /* ============================================================
@@ -1971,6 +1921,99 @@ function renderReturns() {
 }
 
 /* ============================================================
+   STOCK
+   ============================================================ */
+// Stock is auto-linked to Dispatch: every dispatch row with a given
+// Item Type counts as 1 unit issued for that item type. Returns are
+// NOT added back to balance, since returned items are logged as
+// broken/faulty/damaged rather than restocked as usable inventory.
+function getStockSummary() {
+  const received = {};
+  db.stock.forEach(s => { received[s.itemType] = (received[s.itemType]||0) + (Number(s.qty)||0); });
+  const issued = {};
+  db.dispatch.forEach(d => { if (d.itemType) issued[d.itemType] = (issued[d.itemType]||0) + 1; });
+  const types = [...new Set([...Object.keys(received), ...Object.keys(issued)])].sort();
+  return types.map(t => {
+    const rec = received[t] || 0;
+    const iss = issued[t]  || 0;
+    const bal = rec - iss;
+    return { itemType: t, received: rec, issued: iss, balance: bal };
+  });
+}
+
+function renderStock() {
+  const s  = document.getElementById('stock-search').value.toLowerCase();
+  const itf = document.getElementById('stock-filter-item').value;
+  const mf  = document.getElementById('stock-filter-month').value;
+
+  // Rebuild item-type dropdown (from both stock receipts & dispatch item types)
+  const itemSel = document.getElementById('stock-filter-item');
+  const curItem = itemSel.value;
+  const allItems = [...new Set([...db.stock.map(s=>s.itemType), ...db.dispatch.map(d=>d.itemType)])].filter(Boolean).sort();
+  itemSel.innerHTML = '<option value="">All Item Types</option>' + allItems.map(t=>`<option value="${esc(t)}"${t===curItem?' selected':''}>${esc(t)}</option>`).join('');
+
+  // Rebuild month dropdown
+  const mSel = document.getElementById('stock-filter-month');
+  const curM = mSel.value;
+  const allMonths = [...new Set(db.stock.map(s=>monthKey(s.date)))].filter(Boolean).sort((a,b)=>new Date('1 '+a)-new Date('1 '+b));
+  mSel.innerHTML = '<option value="">All Months</option>' + allMonths.map(m=>`<option value="${esc(m)}"${m===curM?' selected':''}>${esc(m)}</option>`).join('');
+
+  // ── Balance summary table ──
+  const summary = getStockSummary();
+  document.getElementById('stock-balance-badge').textContent = summary.length + ' TYPES';
+  document.getElementById('stock-balance-tbody').innerHTML = summary.length
+    ? summary.map(row => {
+        const low = row.balance <= LOW_STOCK_THRESHOLD;
+        const neg = row.balance < 0;
+        const statusHtml = neg
+          ? `<span class="pill pill-overdue">🔴 OVER-ISSUED</span>`
+          : low
+            ? `<span class="pill pill-pending">⚠️ LOW STOCK</span>`
+            : `<span class="pill pill-clear">✅ OK</span>`;
+        return `<tr>
+          <td><strong>${esc(row.itemType)}</strong></td>
+          <td class="mono">${row.received}</td>
+          <td class="mono">${row.issued}</td>
+          <td class="mono" style="font-weight:700;${neg?'color:var(--danger)':low?'color:var(--warn)':''}">${row.balance}</td>
+          <td>${statusHtml}</td>
+        </tr>`;
+      }).join('')
+    : `<tr><td colspan="5"><div class="empty-state"><div class="icon">📦</div><p>No stock records yet</p></div></td></tr>`;
+
+  // ── KPI cards ──
+  const totRec = summary.reduce((a,r)=>a+r.received,0);
+  const totIss = summary.reduce((a,r)=>a+r.issued,0);
+  const totBal = summary.reduce((a,r)=>a+r.balance,0);
+  const lowCount = summary.filter(r=>r.balance <= LOW_STOCK_THRESHOLD).length;
+  document.getElementById('stock-kpi-received').textContent = totRec;
+  document.getElementById('stock-kpi-issued').textContent   = totIss;
+  document.getElementById('stock-kpi-balance').textContent  = totBal;
+  document.getElementById('stock-kpi-low').textContent      = lowCount;
+  document.getElementById('stock-kpi-low-sub').textContent  = 'Below ' + LOW_STOCK_THRESHOLD + ' units';
+
+  // ── Receipt log table ──
+  const rows = db.stock.filter(r =>
+    (!s || [r.itemType,r.source,r.notes,r.enteredBy].some(v=>String(v||'').toLowerCase().includes(s)))
+    && (!itf || r.itemType===itf)
+    && (!mf || monthKey(r.date)===mf)
+  );
+  document.getElementById('stock-count-badge').textContent = rows.length + ' RECORDS';
+  document.getElementById('stock-tbody').innerHTML = buildMonthlyTable(rows, 'date', 7, r => {
+    const idx = db.stock.indexOf(r);
+    return `<td class="mono">${fmtDate(r.date)}</td>
+      <td><strong>${esc(r.itemType)}</strong></td>
+      <td class="mono text-accent" style="font-weight:700">+${esc(r.qty)}</td>
+      <td class="text-blue" style="font-weight:600">${esc(r.source||'—')}</td>
+      <td class="text-dim" style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.notes||'')}">${esc(r.notes||'—')}</td>
+      <td class="text-dim">${esc(r.enteredBy||'—')}</td>
+      <td><div style="display:flex;gap:4px;align-items:center">
+        <button class="row-del-btn row-edit-btn" data-log="stock" data-idx="${idx}" title="Edit record" onclick="openEditModal('stock',${idx});event.stopPropagation()">✏️</button>
+        <button class="row-del-btn" data-log="stock" data-idx="${idx}" title="Delete record">🗑</button>
+      </div></td>`;
+  });
+}
+
+/* ============================================================
    OUTSTANDING
    ============================================================ */
 function renderOutstanding() {
@@ -2021,377 +2064,6 @@ function renderOutstanding() {
     <div class="kpi-card warn"><div class="kpi-label">Total Outstanding</div><div class="kpi-value" style="color:var(--warn)">${tot}</div><div class="kpi-sub">Across all technicians</div></div>
     <div class="kpi-card danger"><div class="kpi-label">Overdue Items</div><div class="kpi-value" style="color:var(--danger)">${totOv}</div><div class="kpi-sub">Past due date</div></div>
     <div class="kpi-card success"><div class="kpi-label">Technicians Clear</div><div class="kpi-value" style="color:var(--success)">${clr}</div><div class="kpi-sub">All parts returned</div></div>`;
-}
-
-/* ============================================================
-   STOCK — bulk stock in / stock out tracking
-   ============================================================ */
-function computeStockBalances() {
-  const types = new Set([...db.stockIn.map(s=>s.itemType), ...db.stockOut.map(s=>s.itemType)]);
-  const rows = [...types].filter(Boolean).sort().map(itemType => {
-    const received = db.stockIn.filter(s=>s.itemType===itemType).reduce((sum,s)=>sum+(Number(s.qty)||0),0);
-    const issued   = db.stockOut.filter(s=>s.itemType===itemType).reduce((sum,s)=>sum+(Number(s.qty)||0),0);
-    return { itemType, received, issued, balance: received - issued };
-  });
-  return rows.sort((a,b) => a.balance - b.balance);
-}
-
-function getStockBalance(itemType) {
-  if (!itemType) return 0;
-  const received = db.stockIn.filter(s=>s.itemType===itemType).reduce((sum,s)=>sum+(Number(s.qty)||0),0);
-  const issued   = db.stockOut.filter(s=>s.itemType===itemType).reduce((sum,s)=>sum+(Number(s.qty)||0),0);
-  return received - issued;
-}
-
-function renderStock() {
-  const s   = document.getElementById('stock-search').value.toLowerCase();
-  const tf  = document.getElementById('stock-filter-type').value;
-  const mvf = document.getElementById('stock-filter-move').value;
-  const mf  = document.getElementById('stock-filter-month').value;
-
-  const bal = computeStockBalances();
-
-  // KPIs
-  const totIn  = db.stockIn.reduce((sum,s)=>sum+(Number(s.qty)||0),0);
-  const totOut = db.stockOut.reduce((sum,s)=>sum+(Number(s.qty)||0),0);
-  const lowItems = bal.filter(b=>b.balance < LOW_STOCK_THRESHOLD);
-  document.getElementById('stock-kpi-in').textContent      = totIn;
-  document.getElementById('stock-kpi-out').textContent     = totOut;
-  document.getElementById('stock-kpi-balance').textContent = totIn - totOut;
-  document.getElementById('stock-kpi-types').textContent   = bal.length;
-  document.getElementById('stock-kpi-low').textContent     = lowItems.length;
-  document.getElementById('stock-kpi-low-sub').textContent = lowItems.length
-    ? lowItems.slice(0,2).map(b=>b.itemType).join(', ') + (lowItems.length>2 ? ` +${lowItems.length-2} more` : '')
-    : 'Below 10 units';
-
-  // Low stock alert banner
-  const alertEl = document.getElementById('stock-low-alert');
-  if (lowItems.length) {
-    alertEl.innerHTML = `<div class="warn-box" style="margin-bottom:20px">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-weight:700;color:var(--danger)">⚠️ Low Stock Alert — ${lowItems.length} item${lowItems.length!==1?'s':''} below ${LOW_STOCK_THRESHOLD} units</div>
-      <div style="display:flex;flex-wrap:wrap;gap:6px">
-        ${lowItems.map(b=>`<span class="item-stat-chip chip-overdue" title="Balance: ${b.balance}">🔴 ${esc(b.itemType)} — ${b.balance} left</span>`).join('')}
-      </div>
-    </div>`;
-  } else {
-    alertEl.innerHTML = '';
-  }
-
-  // Balance table
-  document.getElementById('stock-balance-badge').textContent = bal.length + ' TYPES';
-  document.getElementById('stock-balance-tbody').innerHTML = bal.length ? bal.map(b => {
-    const lowFlag = b.balance < LOW_STOCK_THRESHOLD;
-    return `<tr>
-      <td><strong>${esc(b.itemType)}</strong></td>
-      <td class="mono" style="color:var(--success)">${b.received}</td>
-      <td class="mono" style="color:var(--accent2)">${b.issued}</td>
-      <td class="mono" style="font-weight:700;color:${lowFlag?'var(--danger)':'var(--text)'}">${b.balance}</td>
-      <td><span class="pill ${lowFlag?'pill-overdue':'pill-clear'}">${lowFlag?'🔴 LOW STOCK':'✅ OK'}</span></td>
-    </tr>`;
-  }).join('') : `<tr><td colspan="5"><div class="empty-state"><div class="icon">📦</div><p>No stock recorded yet — use "＋ Stock In" to log received items</p></div></td></tr>`;
-
-  // Rebuild item type filter dropdown
-  const typeSel = document.getElementById('stock-filter-type');
-  const curType = typeSel.value;
-  const allTypes = [...new Set([...db.stockIn.map(s=>s.itemType), ...db.stockOut.map(s=>s.itemType)])].filter(Boolean).sort();
-  typeSel.innerHTML = '<option value="">All Item Types</option>' + allTypes.map(t=>`<option value="${esc(t)}"${t===curType?' selected':''}>${esc(t)}</option>`).join('');
-
-  // Combined ledger
-  const combined = [
-    ...db.stockIn.map((r,i)  => ({ ...r, move:'IN',  idx:i })),
-    ...db.stockOut.map((r,i) => ({ ...r, move:'OUT', idx:i })),
-  ];
-
-  // Rebuild month filter dropdown
-  const mSel = document.getElementById('stock-filter-month');
-  const curM = mSel.value;
-  const allMonths = [...new Set(combined.map(r=>monthKey(r.date)))].filter(Boolean).sort((a,b)=>new Date('1 '+a)-new Date('1 '+b));
-  mSel.innerHTML = '<option value="">All Months</option>' + allMonths.map(m=>`<option value="${esc(m)}"${m===curM?' selected':''}>${esc(m)}</option>`).join('');
-
-  const rows = combined.filter(r => {
-    const who = r.move==='IN' ? r.source : r.issuedTo;
-    return (!s   || [r.itemType, who, r.notes, r.enteredBy].some(v=>String(v||'').toLowerCase().includes(s)))
-        && (!tf  || r.itemType===tf)
-        && (!mvf || r.move===mvf)
-        && (!mf  || monthKey(r.date)===mf);
-  }).sort((a,b) => String(b.date||'').localeCompare(String(a.date||'')));
-
-  document.getElementById('stock-count-badge').textContent = rows.length + ' RECORDS';
-  document.getElementById('stock-tbody').innerHTML = buildMonthlyTable(rows, 'date', 8, r => {
-    const isIn  = r.move==='IN';
-    const who   = isIn ? (r.source||'—') : (r.issuedTo||'—');
-    const logType = isIn ? 'stockin' : 'stockout';
-    return `<td class="mono">${fmtDate(r.date)}</td>
-      <td><span class="pill ${isIn?'pill-clear':'pill-pending'}">${isIn?'📥 IN':'📤 OUT'}</span></td>
-      <td><strong>${esc(r.itemType)}</strong></td>
-      <td class="mono" style="font-weight:700;color:${isIn?'var(--success)':'var(--accent2)'}">${isIn?'+':'-'}${esc(r.qty)}</td>
-      <td>${esc(who)}</td>
-      <td class="text-dim" style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.notes||'')}">${esc(r.notes||'—')}</td>
-      <td class="text-dim">${esc(r.enteredBy||'—')}</td>
-      <td><div style="display:flex;gap:4px;align-items:center">
-        <button class="row-del-btn row-edit-btn" data-log="${logType}" data-idx="${r.idx}" title="Edit record" onclick="openEditStockModal('${logType}',${r.idx});event.stopPropagation()">✏️</button>
-        <button class="row-del-btn" data-log="${logType}" data-idx="${r.idx}" title="Delete record">🗑</button>
-      </div></td>`;
-  });
-}
-
-function openStockModal(type) {
-  const admins = db.staff.filter(s=>s.role==='DATA ENTRY STAFF'&&s.active==='YES').map(s=>s.name);
-  const techs  = db.staff.filter(s=>s.role==='TECHNICIAN'&&s.active==='YES').map(s=>s.name);
-  const itemTypes = [...new Set([...db.stockIn.map(s=>s.itemType), ...db.stockOut.map(s=>s.itemType), ...db.dispatch.map(d=>d.itemType)])].filter(Boolean).sort();
-  const today = new Date().toISOString().split('T')[0];
-
-  if (type === 'in') {
-    document.getElementById('modal-title').innerHTML = '📥 New Stock In Entry';
-    document.getElementById('modal-body').innerHTML = `
-      <div class="form-grid">
-        <div class="form-group">
-          <label class="form-label">Date *</label>
-          <input class="form-input" type="date" id="si-date" value="${today}">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Item Type *</label>
-          <input class="form-input" type="text" id="si-itemtype" list="sitl" placeholder="e.g. Charger">
-          <datalist id="sitl">${itemTypes.map(t=>`<option>${esc(t)}</option>`).join('')}</datalist>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Quantity *</label>
-          <input class="form-input" type="number" id="si-qty" min="1" placeholder="e.g. 300">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Source / Supplier *</label>
-          <input class="form-input" type="text" id="si-source" placeholder="e.g. Colombo Store / Head Office">
-        </div>
-        <div class="form-group full">
-          <label class="form-label">Notes</label>
-          <input class="form-input" type="text" id="si-notes" placeholder="Optional notes about this receipt">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Entered By</label>
-          <select class="form-select" id="si-enteredby">
-            <option value="">Select…</option>
-            ${admins.map(a=>`<option>${esc(a)}</option>`).join('')}
-          </select>
-        </div>
-      </div>
-      <div class="modal-actions">
-        <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
-        <button class="btn btn-primary" onclick="saveStockIn()">＋ Add Stock In</button>
-      </div>`;
-  } else {
-    document.getElementById('modal-title').innerHTML = '📤 New Stock Out Entry';
-    document.getElementById('modal-body').innerHTML = `
-      <div class="form-grid">
-        <div class="form-group">
-          <label class="form-label">Date *</label>
-          <input class="form-input" type="date" id="so-date" value="${today}">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Item Type *</label>
-          <input class="form-input" type="text" id="so-itemtype" list="sotl" placeholder="e.g. Charger" oninput="updateStockOutBalanceHint()">
-          <datalist id="sotl">${itemTypes.map(t=>`<option>${esc(t)}</option>`).join('')}</datalist>
-          <div class="form-hint" id="so-balance-hint"></div>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Quantity *</label>
-          <input class="form-input" type="number" id="so-qty" min="1" placeholder="e.g. 5" oninput="updateStockOutBalanceHint()">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Issued To *</label>
-          <input class="form-input" type="text" id="so-issuedto" list="sostaff" placeholder="Who received it">
-          <datalist id="sostaff">${techs.map(t=>`<option>${esc(t)}</option>`).join('')}</datalist>
-        </div>
-        <div class="form-group full">
-          <label class="form-label">Notes</label>
-          <input class="form-input" type="text" id="so-notes" placeholder="Optional notes about this issue">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Entered By</label>
-          <select class="form-select" id="so-enteredby">
-            <option value="">Select…</option>
-            ${admins.map(a=>`<option>${esc(a)}</option>`).join('')}
-          </select>
-        </div>
-      </div>
-      <div class="modal-actions">
-        <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
-        <button class="btn btn-primary" onclick="saveStockOut()">＋ Add Stock Out</button>
-      </div>`;
-  }
-  document.getElementById('modal-overlay').classList.add('open');
-}
-
-function updateStockOutBalanceHint() {
-  const itemType = document.getElementById('so-itemtype').value.trim();
-  const qty      = Number(document.getElementById('so-qty').value) || 0;
-  const hint     = document.getElementById('so-balance-hint');
-  if (!itemType) { hint.textContent = ''; return; }
-  const bal = getStockBalance(itemType);
-  if (qty > bal) {
-    hint.style.color = 'var(--danger)';
-    hint.textContent = `⚠️ Current balance is only ${bal} — this will take stock negative`;
-  } else {
-    hint.style.color = 'var(--text-dim)';
-    hint.textContent = `Current balance: ${bal}`;
-  }
-}
-
-function saveStockIn() {
-  const itemType = document.getElementById('si-itemtype').value.trim();
-  const qty      = Number(document.getElementById('si-qty').value);
-  const source   = document.getElementById('si-source').value.trim();
-  if (!itemType || !qty || qty <= 0 || !source) { showToast('Item Type, Quantity & Source are required', true); return; }
-  db.stockIn.push({
-    date:      document.getElementById('si-date').value,
-    itemType, qty, source,
-    notes:     document.getElementById('si-notes').value.trim(),
-    enteredBy: document.getElementById('si-enteredby').value,
-  });
-  closeModal(); showToast(`✅ ${qty} × ${itemType} received!`);
-  renderOverview(); renderStock(); saveDb();
-}
-
-function saveStockOut() {
-  const itemType = document.getElementById('so-itemtype').value.trim();
-  const qty      = Number(document.getElementById('so-qty').value);
-  const issuedTo = document.getElementById('so-issuedto').value.trim();
-  if (!itemType || !qty || qty <= 0 || !issuedTo) { showToast('Item Type, Quantity & Issued To are required', true); return; }
-  db.stockOut.push({
-    date:      document.getElementById('so-date').value,
-    itemType, qty, issuedTo,
-    notes:     document.getElementById('so-notes').value.trim(),
-    enteredBy: document.getElementById('so-enteredby').value,
-  });
-  closeModal();
-  const newBal = getStockBalance(itemType);
-  if (newBal < LOW_STOCK_THRESHOLD) {
-    showToast(`⚠️ ${itemType} is now low — only ${newBal} left!`, true);
-  } else {
-    showToast(`✅ ${qty} × ${itemType} issued to ${issuedTo}!`);
-  }
-  renderOverview(); renderStock(); saveDb();
-}
-
-function openEditStockModal(logType, idx) {
-  const admins = db.staff.filter(s=>s.role==='DATA ENTRY STAFF'&&s.active==='YES').map(s=>s.name);
-  const techs  = db.staff.filter(s=>s.role==='TECHNICIAN'&&s.active==='YES').map(s=>s.name);
-  const itemTypes = [...new Set([...db.stockIn.map(s=>s.itemType), ...db.stockOut.map(s=>s.itemType), ...db.dispatch.map(d=>d.itemType)])].filter(Boolean).sort();
-
-  if (logType === 'stockin') {
-    const r = db.stockIn[idx];
-    if (!r) return;
-    document.getElementById('modal-title').innerHTML = '✏️ Edit Stock In Entry';
-    document.getElementById('modal-body').innerHTML = `
-      <div class="form-grid">
-        <div class="form-group">
-          <label class="form-label">Date *</label>
-          <input class="form-input" type="date" id="e-si-date" value="${esc(r.date||'')}">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Item Type *</label>
-          <input class="form-input" type="text" id="e-si-itemtype" list="esitl" value="${esc(r.itemType||'')}">
-          <datalist id="esitl">${itemTypes.map(t=>`<option>${esc(t)}</option>`).join('')}</datalist>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Quantity *</label>
-          <input class="form-input" type="number" id="e-si-qty" min="1" value="${esc(r.qty||'')}">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Source / Supplier *</label>
-          <input class="form-input" type="text" id="e-si-source" value="${esc(r.source||'')}">
-        </div>
-        <div class="form-group full">
-          <label class="form-label">Notes</label>
-          <input class="form-input" type="text" id="e-si-notes" value="${esc(r.notes||'')}">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Entered By</label>
-          <select class="form-select" id="e-si-enteredby">
-            <option value="">Select…</option>
-            ${admins.map(a=>`<option${a===r.enteredBy?' selected':''}>${esc(a)}</option>`).join('')}
-            ${!admins.includes(r.enteredBy)&&r.enteredBy?`<option selected>${esc(r.enteredBy)}</option>`:''}
-          </select>
-        </div>
-      </div>
-      <div class="modal-actions">
-        <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
-        <button class="btn btn-primary" onclick="saveEditStock('stockin',${idx})">💾 Save Changes</button>
-      </div>`;
-  } else {
-    const r = db.stockOut[idx];
-    if (!r) return;
-    document.getElementById('modal-title').innerHTML = '✏️ Edit Stock Out Entry';
-    document.getElementById('modal-body').innerHTML = `
-      <div class="form-grid">
-        <div class="form-group">
-          <label class="form-label">Date *</label>
-          <input class="form-input" type="date" id="e-so-date" value="${esc(r.date||'')}">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Item Type *</label>
-          <input class="form-input" type="text" id="e-so-itemtype" list="esotl" value="${esc(r.itemType||'')}">
-          <datalist id="esotl">${itemTypes.map(t=>`<option>${esc(t)}</option>`).join('')}</datalist>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Quantity *</label>
-          <input class="form-input" type="number" id="e-so-qty" min="1" value="${esc(r.qty||'')}">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Issued To *</label>
-          <input class="form-input" type="text" id="e-so-issuedto" list="esostaff" value="${esc(r.issuedTo||'')}">
-          <datalist id="esostaff">${techs.map(t=>`<option>${esc(t)}</option>`).join('')}</datalist>
-        </div>
-        <div class="form-group full">
-          <label class="form-label">Notes</label>
-          <input class="form-input" type="text" id="e-so-notes" value="${esc(r.notes||'')}">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Entered By</label>
-          <select class="form-select" id="e-so-enteredby">
-            <option value="">Select…</option>
-            ${admins.map(a=>`<option${a===r.enteredBy?' selected':''}>${esc(a)}</option>`).join('')}
-            ${!admins.includes(r.enteredBy)&&r.enteredBy?`<option selected>${esc(r.enteredBy)}</option>`:''}
-          </select>
-        </div>
-      </div>
-      <div class="modal-actions">
-        <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
-        <button class="btn btn-primary" onclick="saveEditStock('stockout',${idx})">💾 Save Changes</button>
-      </div>`;
-  }
-  document.getElementById('modal-overlay').classList.add('open');
-}
-
-function saveEditStock(logType, idx) {
-  if (logType === 'stockin') {
-    const r = db.stockIn[idx];
-    if (!r) return;
-    const itemType = document.getElementById('e-si-itemtype').value.trim();
-    const qty      = Number(document.getElementById('e-si-qty').value);
-    const source   = document.getElementById('e-si-source').value.trim();
-    if (!itemType || !qty || qty <= 0 || !source) { showToast('Item Type, Quantity & Source are required', true); return; }
-    r.date      = document.getElementById('e-si-date').value;
-    r.itemType  = itemType;
-    r.qty       = qty;
-    r.source    = source;
-    r.notes     = document.getElementById('e-si-notes').value.trim();
-    r.enteredBy = document.getElementById('e-si-enteredby').value;
-  } else {
-    const r = db.stockOut[idx];
-    if (!r) return;
-    const itemType = document.getElementById('e-so-itemtype').value.trim();
-    const qty      = Number(document.getElementById('e-so-qty').value);
-    const issuedTo = document.getElementById('e-so-issuedto').value.trim();
-    if (!itemType || !qty || qty <= 0 || !issuedTo) { showToast('Item Type, Quantity & Issued To are required', true); return; }
-    r.date      = document.getElementById('e-so-date').value;
-    r.itemType  = itemType;
-    r.qty       = qty;
-    r.issuedTo  = issuedTo;
-    r.notes     = document.getElementById('e-so-notes').value.trim();
-    r.enteredBy = document.getElementById('e-so-enteredby').value;
-  }
-  closeModal(); showToast('✅ Stock entry updated!');
-  renderOverview(); renderStock(); saveDb();
 }
 
 /* ============================================================
@@ -2532,8 +2204,52 @@ function saveStaff(editId) {
 function openEntryModal(type) {
   const techs  = db.staff.filter(s=>s.role==='TECHNICIAN'&&s.active==='YES').map(s=>s.name);
   const admins = db.staff.filter(s=>s.role==='DATA ENTRY STAFF'&&s.active==='YES').map(s=>s.name);
-  const itemTypes = [...new Set(db.dispatch.map(d=>d.itemType))].sort();
+  const itemTypes = [...new Set([...db.dispatch.map(d=>d.itemType), ...db.stock.map(s=>s.itemType)])].filter(Boolean).sort();
+  const sources  = [...new Set(db.stock.map(s=>s.source))].filter(Boolean).sort();
   const today = new Date().toISOString().split('T')[0];
+
+  if (type === 'stock') {
+    document.getElementById('modal-title').innerHTML = '📦 Receive Stock';
+    document.getElementById('modal-body').innerHTML = `
+      <div class="info-box">ℹ️ Received quantities add to the item type's balance. This is separate from dispatch (issuing), which auto-subtracts.</div>
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label">Date Received *</label>
+          <input class="form-input" type="date" id="s-date" value="${today}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Quantity *</label>
+          <input class="form-input" type="number" id="s-qty" min="1" step="1" placeholder="e.g. 300">
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Item Type *</label>
+          <input class="form-input" type="text" id="s-itemtype" list="sitl" placeholder="e.g. Charger">
+          <datalist id="sitl">${itemTypes.map(t=>`<option>${esc(t)}</option>`).join('')}</datalist>
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Source / Store *</label>
+          <input class="form-input" type="text" id="s-source" list="ssrc" placeholder="e.g. Colombo Store">
+          <datalist id="ssrc">${sources.map(t=>`<option>${esc(t)}</option>`).join('')}</datalist>
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Notes</label>
+          <input class="form-input" type="text" id="s-notes" placeholder="Optional notes about this receipt">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Entered By</label>
+          <select class="form-select" id="s-enteredby">
+            <option value="">Select…</option>
+            ${admins.map(a=>`<option>${esc(a)}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="saveStock()">＋ Add to Stock</button>
+      </div>`;
+    document.getElementById('modal-overlay').classList.add('open');
+    return;
+  }
 
   if (type === 'dispatch') {
     document.getElementById('modal-title').innerHTML = '📤 New Dispatch Entry';
@@ -2802,6 +2518,25 @@ function saveReturn() {
   renderOverview(); renderReturns(); saveDb();
 }
 
+function saveStock() {
+  const itype  = document.getElementById('s-itemtype').value.trim();
+  const qty    = parseInt(document.getElementById('s-qty').value, 10);
+  const source = document.getElementById('s-source').value.trim();
+  if (!itype || !qty || qty <= 0) { showToast('Item Type & a valid Quantity are required', true); return; }
+  if (!source) { showToast('Source / Store is required', true); return; }
+  const e = {
+    date:      document.getElementById('s-date').value,
+    itemType:  itype,
+    qty,
+    source,
+    notes:     document.getElementById('s-notes').value.trim(),
+    enteredBy: document.getElementById('s-enteredby').value,
+  };
+  db.stock.push(e);
+  closeModal(); showToast(`✅ ${qty} × ${itype} added to stock!`);
+  renderStock(); saveDb();
+}
+
 function closeModal() { document.getElementById('modal-overlay').classList.remove('open'); }
 
 /* ============================================================
@@ -2811,9 +2546,7 @@ let _clearTarget = null;
 
 function openClearModal(logType) {
   _clearTarget = { logType, scope: 'all', months: [] };
-  const logData = logType === 'dispatch' ? db.dispatch
-                : logType === 'stock'    ? [...db.stockIn, ...db.stockOut]
-                : db.returns;
+  const logData = logType === 'dispatch' ? db.dispatch : logType === 'stock' ? db.stock : db.returns;
   const allMonths = [...new Set(logData.map(d=>monthKey(d.date)))].filter(Boolean).sort((a,b)=>new Date('1 '+a)-new Date('1 '+b));
 
   document.getElementById('pw-title').innerHTML = logType==='dispatch' ? '🗑 Clear Dispatch Log' : logType==='stock' ? '🗑 Clear Stock Log' : '🗑 Clear Return Log';
@@ -2889,13 +2622,8 @@ function executeClear() {
     if (scope==='all') { cleared=db.dispatch.length; db.dispatch=[]; }
     else { const b=db.dispatch.length; db.dispatch=db.dispatch.filter(d=>!months.includes(monthKey(d.date))); cleared=b-db.dispatch.length; }
   } else if (logType === 'stock') {
-    if (scope==='all') { cleared=db.stockIn.length+db.stockOut.length; db.stockIn=[]; db.stockOut=[]; }
-    else {
-      const b=db.stockIn.length+db.stockOut.length;
-      db.stockIn  = db.stockIn.filter(r=>!months.includes(monthKey(r.date)));
-      db.stockOut = db.stockOut.filter(r=>!months.includes(monthKey(r.date)));
-      cleared = b - (db.stockIn.length+db.stockOut.length);
-    }
+    if (scope==='all') { cleared=db.stock.length; db.stock=[]; }
+    else { const b=db.stock.length; db.stock=db.stock.filter(r=>!months.includes(monthKey(r.date))); cleared=b-db.stock.length; }
   } else {
     if (scope==='all') { cleared=db.returns.length; db.returns=[]; }
     else { const b=db.returns.length; db.returns=db.returns.filter(r=>!months.includes(monthKey(r.date))); cleared=b-db.returns.length; }
@@ -2930,23 +2658,13 @@ document.addEventListener('keydown', function(e) {
   if (e.key==='Escape') closeRowPwPrompt();
 });
 
-function getLogArray(logType) {
-  if (logType === 'dispatch') return db.dispatch;
-  if (logType === 'return')   return db.returns;
-  if (logType === 'stockin')  return db.stockIn;
-  if (logType === 'stockout') return db.stockOut;
-  return [];
-}
-
 function confirmRowDelete(logType, idx, btn) {
   closeRowPwPrompt();
-  const record = getLogArray(logType)[idx];
+  const record = logType==='dispatch' ? db.dispatch[idx] : logType==='stock' ? db.stock[idx] : db.returns[idx];
   if (!record) return;
-  const label = logType==='stockin'  ? `${record.itemType} · ${record.qty} from ${record.source}`
-              : logType==='stockout' ? `${record.itemType} · ${record.qty} to ${record.issuedTo}`
-              : record.tech + ' · ' + (record.tid || record.serial);
+  const label = logType==='stock' ? (record.itemType + ' · +' + record.qty) : (record.tech + ' · ' + (record.tid || record.serial));
   const tr = btn.closest('tr');
-  const colCount = logType==='dispatch' ? 12 : logType==='stockin' || logType==='stockout' ? 8 : 11;
+  const colCount = logType==='dispatch' ? 12 : logType==='stock' ? 7 : 11;
   const pr = document.createElement('tr');
   pr.className = 'row-pw-row'; pr.id = 'row-pw-prompt';
   pr.innerHTML = `<td colspan="${colCount}"><div class="row-pw-inner">
@@ -2968,13 +2686,11 @@ function closeRowPwPrompt() {
 function executeRowDelete() {
   if (!_rowDelTarget) return;
   const { logType, idx } = _rowDelTarget;
-  const arr   = getLogArray(logType);
-  const label = arr[idx] ? (arr[idx].tid || arr[idx].serial || arr[idx].itemType) : 'record';
+  const arr   = logType==='dispatch' ? db.dispatch : logType==='stock' ? db.stock : db.returns;
+  const label = arr[idx] ? (logType==='stock' ? arr[idx].itemType : (arr[idx].tid || arr[idx].serial)) : 'record';
   arr.splice(idx, 1);
   closeRowPwPrompt(); renderOverview();
-  if (logType==='dispatch') renderDispatch();
-  else if (logType==='stockin' || logType==='stockout') renderStock();
-  else renderReturns();
+  if (logType==='dispatch') renderDispatch(); else if (logType==='stock') renderStock(); else renderReturns();
   showToast('🗑 Deleted: ' + label); saveDb();
 }
 
@@ -2985,6 +2701,52 @@ function openEditModal(logType, idx) {
   const techs    = db.staff.filter(s=>s.role==='TECHNICIAN'&&s.active==='YES').map(s=>s.name);
   const admins   = db.staff.filter(s=>s.role==='DATA ENTRY STAFF'&&s.active==='YES').map(s=>s.name);
   const itemTypes = [...new Set(db.dispatch.map(d=>d.itemType))].sort();
+
+  if (logType === 'stock') {
+    const s = db.stock[idx];
+    if (!s) return;
+    const sources = [...new Set(db.stock.map(x=>x.source))].filter(Boolean).sort();
+    document.getElementById('modal-title').innerHTML = '✏️ Edit Stock Receipt';
+    document.getElementById('modal-body').innerHTML = `
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label">Date Received *</label>
+          <input class="form-input" type="date" id="e-date" value="${esc(s.date||'')}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Quantity *</label>
+          <input class="form-input" type="number" id="e-qty" min="1" step="1" value="${esc(s.qty||'')}">
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Item Type *</label>
+          <input class="form-input" type="text" id="e-itemtype" list="eitl3" value="${esc(s.itemType||'')}">
+          <datalist id="eitl3">${itemTypes.map(t=>`<option>${esc(t)}</option>`).join('')}</datalist>
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Source / Store *</label>
+          <input class="form-input" type="text" id="e-source" list="esrc" value="${esc(s.source||'')}">
+          <datalist id="esrc">${sources.map(t=>`<option>${esc(t)}</option>`).join('')}</datalist>
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Notes</label>
+          <input class="form-input" type="text" id="e-notes" value="${esc(s.notes||'')}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Entered By</label>
+          <select class="form-select" id="e-enteredby">
+            <option value="">Select…</option>
+            ${admins.map(a=>`<option${a===s.enteredBy?' selected':''}>${esc(a)}</option>`).join('')}
+            ${!admins.includes(s.enteredBy)&&s.enteredBy?`<option selected>${esc(s.enteredBy)}</option>`:''}
+          </select>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="saveEdit('stock',${idx})">💾 Save Changes</button>
+      </div>`;
+    document.getElementById('modal-overlay').classList.add('open');
+    return;
+  }
 
   if (logType === 'dispatch') {
     const d = db.dispatch[idx];
@@ -3122,6 +2884,23 @@ function openEditModal(logType, idx) {
 
 function saveEdit(logType, idx) {
   const g = id => (document.getElementById(id)||{}).value || '';
+  if (logType === 'stock') {
+    const s = db.stock[idx];
+    if (!s) return;
+    const item = g('e-itemtype').trim();
+    const qty  = parseInt(g('e-qty'), 10);
+    const source = g('e-source').trim();
+    if (!g('e-date') || !item || !qty || qty<=0 || !source) { showToast('Date, Item Type, Quantity & Source are required', true); return; }
+    s.date      = g('e-date');
+    s.itemType  = item;
+    s.qty       = qty;
+    s.source    = source;
+    s.notes     = g('e-notes').trim();
+    s.enteredBy = g('e-enteredby');
+    closeModal(); renderStock();
+    showToast('✅ Record updated!'); saveDb();
+    return;
+  }
   if (logType === 'dispatch') {
     const d = db.dispatch[idx];
     if (!d) return;
@@ -3181,6 +2960,10 @@ function openExportModal() {
     </div>
     <div class="section-label">📋 Sheets to Include</div>
     <div class="export-sheet-grid">
+      <label class="export-sheet-card selected" id="card-stock">
+        <input type="checkbox" id="exp-stock" checked onchange="document.getElementById('card-stock').classList.toggle('selected',this.checked);updateExportPreview()">
+        <div><div class="export-sheet-label">📦 Stock Log</div><div class="export-sheet-sub" id="exp-stock-sub">— records</div></div>
+      </label>
       <label class="export-sheet-card selected" id="card-dispatch">
         <input type="checkbox" id="exp-dispatch" checked onchange="document.getElementById('card-dispatch').classList.toggle('selected',this.checked);updateExportPreview()">
         <div><div class="export-sheet-label">📤 Dispatch Log</div><div class="export-sheet-sub" id="exp-dispatch-sub">— records</div></div>
@@ -3196,14 +2979,6 @@ function openExportModal() {
       <label class="export-sheet-card selected" id="card-staff">
         <input type="checkbox" id="exp-staff" checked onchange="document.getElementById('card-staff').classList.toggle('selected',this.checked);updateExportPreview()">
         <div><div class="export-sheet-label">👥 Staff List</div><div class="export-sheet-sub" id="exp-staff-sub">— members</div></div>
-      </label>
-      <label class="export-sheet-card selected" id="card-stock">
-        <input type="checkbox" id="exp-stock" checked onchange="document.getElementById('card-stock').classList.toggle('selected',this.checked);updateExportPreview()">
-        <div><div class="export-sheet-label">📦 Stock Ledger</div><div class="export-sheet-sub" id="exp-stock-sub">— records</div></div>
-      </label>
-      <label class="export-sheet-card selected" id="card-stockbal">
-        <input type="checkbox" id="exp-stockbal" checked onchange="document.getElementById('card-stockbal').classList.toggle('selected',this.checked);updateExportPreview()">
-        <div><div class="export-sheet-label">📊 Stock Balance</div><div class="export-sheet-sub">Per item type</div></div>
       </label>
     </div>
     <div class="export-preview" id="export-preview">Calculating…</div>
@@ -3222,10 +2997,9 @@ function getExportFiltered() {
   const to   = document.getElementById('exp-to').value;
   return {
     from, to,
-    dRows:  db.dispatch.filter(d => (!from||d.date>=from) && (!to||d.date<=to)),
-    rRows:  db.returns.filter(r  => (!from||r.date>=from) && (!to||r.date<=to)),
-    siRows: db.stockIn.filter(s  => (!from||s.date>=from) && (!to||s.date<=to)),
-    soRows: db.stockOut.filter(s => (!from||s.date>=from) && (!to||s.date<=to)),
+    dRows: db.dispatch.filter(d => (!from||d.date>=from) && (!to||d.date<=to)),
+    rRows: db.returns.filter(r  => (!from||r.date>=from) && (!to||r.date<=to)),
+    sRows: db.stock.filter(s   => (!from||s.date>=from) && (!to||s.date<=to)),
   };
 }
 
@@ -3233,12 +3007,12 @@ function updateExportPreview() {
   const f = getExportFiltered();
   document.getElementById('exp-dispatch-sub').textContent = f.dRows.length + ' records';
   document.getElementById('exp-returns-sub').textContent  = f.rRows.length + ' records';
+  document.getElementById('exp-stock-sub').textContent    = f.sRows.length + ' records';
   document.getElementById('exp-staff-sub').textContent    = db.staff.length + ' members';
-  document.getElementById('exp-stock-sub').textContent    = (f.siRows.length+f.soRows.length) + ' records';
   const total  = (document.getElementById('exp-dispatch').checked ? f.dRows.length : 0)
                + (document.getElementById('exp-returns').checked  ? f.rRows.length : 0)
-               + (document.getElementById('exp-stock').checked    ? (f.siRows.length+f.soRows.length) : 0);
-  const sheets = ['exp-dispatch','exp-returns','exp-outstanding','exp-staff','exp-stock','exp-stockbal'].filter(id=>document.getElementById(id).checked).length;
+               + (document.getElementById('exp-stock').checked    ? f.sRows.length : 0);
+  const sheets = ['exp-dispatch','exp-returns','exp-stock','exp-outstanding','exp-staff'].filter(id=>document.getElementById(id).checked).length;
   document.getElementById('export-preview').innerHTML =
     `Exporting <span>${total} records</span> across <span>${sheets} sheet${sheets!==1?'s':''}</span>` +
     (f.from && f.to ? ` &nbsp;·&nbsp; <span>${fmtDate(f.from)} → ${fmtDate(f.to)}</span>` : ' &nbsp;·&nbsp; All dates');
@@ -3267,6 +3041,17 @@ function doExport() {
       f.rRows.map(r => [r.date,r.time,r.tid||r.serial,r.merchant,r.serial,r.tech,r.itemType,r.condition,r.remarks,r.dispatchDate,r.enteredBy])
     );
   }
+  if (document.getElementById('exp-stock').checked) {
+    addSheet('STOCK RECEIPTS',
+      ['Date Received','Item Type','Quantity','Source / Store','Notes','Entered By'],
+      f.sRows.map(s => [s.date,s.itemType,s.qty,s.source,s.notes,s.enteredBy])
+    );
+    addSheet('STOCK BALANCE',
+      ['Item Type','Received','Issued','Balance','Status'],
+      getStockSummary().map(r => [r.itemType,r.received,r.issued,r.balance,
+        r.balance<0?'OVER-ISSUED':r.balance<=LOW_STOCK_THRESHOLD?'LOW STOCK':'OK'])
+    );
+  }
   if (document.getElementById('exp-outstanding').checked) {
     const t2 = new Date(); t2.setHours(0,0,0,0);
     addSheet('OUTSTANDING',
@@ -3287,22 +3072,6 @@ function doExport() {
     addSheet('STAFF LIST',
       ['#','Name','Role','Area / Region','Contact','Email','Status'],
       db.staff.map(s => [s.id,s.name,s.role,s.area,s.contact||'',s.email||'',s.active])
-    );
-  }
-  if (document.getElementById('exp-stock').checked) {
-    const stockRows = [
-      ...f.siRows.map(s => [s.date,'IN', s.itemType,s.qty,s.source,'',s.notes,s.enteredBy]),
-      ...f.soRows.map(s => [s.date,'OUT',s.itemType,s.qty,'',s.issuedTo,s.notes,s.enteredBy]),
-    ].sort((a,b)=>String(a[0]||'').localeCompare(String(b[0]||'')));
-    addSheet('STOCK LEDGER',
-      ['Date','Movement','Item Type','Quantity','Source / Supplier','Issued To','Notes','Entered By'],
-      stockRows
-    );
-  }
-  if (document.getElementById('exp-stockbal').checked) {
-    addSheet('STOCK BALANCE',
-      ['Item Type','Total Received','Total Issued','Balance','Status'],
-      computeStockBalances().map(b => [b.itemType,b.received,b.issued,b.balance,b.balance<LOW_STOCK_THRESHOLD?'LOW STOCK':'OK'])
     );
   }
   if (!wb.SheetNames.length) { showToast('Select at least one sheet to export', true); return; }
@@ -3333,6 +3102,10 @@ function openPdfModal() {
       <label class="export-sheet-card selected" id="pdf-card-summary">
         <input type="checkbox" id="pdf-summary" checked onchange="document.getElementById('pdf-card-summary').classList.toggle('selected',this.checked);updatePdfPreview()">
         <div><div class="export-sheet-label">📊 KPI Summary</div><div class="export-sheet-sub">Overview metrics</div></div>
+      </label>
+      <label class="export-sheet-card selected" id="pdf-card-stock">
+        <input type="checkbox" id="pdf-stock" checked onchange="document.getElementById('pdf-card-stock').classList.toggle('selected',this.checked);updatePdfPreview()">
+        <div><div class="export-sheet-label">📦 Stock</div><div class="export-sheet-sub" id="pdf-stock-sub">— records</div></div>
       </label>
       <label class="export-sheet-card selected" id="pdf-card-dispatch">
         <input type="checkbox" id="pdf-dispatch" checked onchange="document.getElementById('pdf-card-dispatch').classList.toggle('selected',this.checked);updatePdfPreview()">
@@ -3370,6 +3143,7 @@ function getPdfFiltered() {
     from, to,
     dRows: db.dispatch.filter(d => (!from||d.date>=from) && (!to||d.date<=to)),
     rRows: db.returns.filter(r  => (!from||r.date>=from) && (!to||r.date<=to)),
+    sRows: db.stock.filter(s   => (!from||s.date>=from) && (!to||s.date<=to)),
   };
 }
 
@@ -3377,13 +3151,16 @@ function updatePdfPreview() {
   const f = getPdfFiltered();
   const dispEl  = document.getElementById('pdf-dispatch-sub');
   const retEl   = document.getElementById('pdf-returns-sub');
+  const stockEl = document.getElementById('pdf-stock-sub');
   const staffEl = document.getElementById('pdf-staff-sub');
   if (dispEl)  dispEl.textContent  = f.dRows.length + ' records';
   if (retEl)   retEl.textContent   = f.rRows.length + ' records';
+  if (stockEl) stockEl.textContent = f.sRows.length + ' records';
   if (staffEl) staffEl.textContent = db.staff.length + ' members';
   const total = (document.getElementById('pdf-dispatch').checked  ? f.dRows.length : 0)
-              + (document.getElementById('pdf-returns').checked   ? f.rRows.length : 0);
-  const secs  = ['pdf-summary','pdf-dispatch','pdf-returns','pdf-outstanding','pdf-staff'].filter(id=>document.getElementById(id).checked).length;
+              + (document.getElementById('pdf-returns').checked   ? f.rRows.length : 0)
+              + (document.getElementById('pdf-stock').checked     ? f.sRows.length : 0);
+  const secs  = ['pdf-summary','pdf-dispatch','pdf-returns','pdf-stock','pdf-outstanding','pdf-staff'].filter(id=>document.getElementById(id).checked).length;
   document.getElementById('pdf-preview').innerHTML =
     `<span>${total} records</span> across <span>${secs} section${secs!==1?'s':''}</span>` +
     (f.from && f.to ? ` &nbsp;·&nbsp; <span>${fmtDate(f.from)} → ${fmtDate(f.to)}</span>` : ' &nbsp;·&nbsp; All dates');
@@ -3397,6 +3174,7 @@ function doPdfExport() {
   const dateRange = (f.from && f.to) ? fmtDate(f.from) + ' — ' + fmtDate(f.to) : 'All Dates';
 
   const inclSummary     = document.getElementById('pdf-summary').checked;
+  const inclStock       = document.getElementById('pdf-stock').checked;
   const inclDispatch    = document.getElementById('pdf-dispatch').checked;
   const inclReturns     = document.getElementById('pdf-returns').checked;
   const inclOutstanding = document.getElementById('pdf-outstanding').checked;
@@ -3470,6 +3248,59 @@ function doPdfExport() {
           &nbsp;·&nbsp;
           Overdue rate: <strong style="color:#dc2626">${total ? Math.round(overdue/total*100) : 0}%</strong>
         </div>
+      </div>`;
+  }
+
+  /* ── Stock ── */
+  if (inclStock) {
+    const summary = getStockSummary();
+    let balRows = '';
+    if (!summary.length) {
+      balRows = `<tr><td colspan="5" style="text-align:center;color:#94a3b8;padding:14px">No stock records</td></tr>`;
+    } else {
+      summary.forEach(row => {
+        const neg = row.balance < 0, low = row.balance <= LOW_STOCK_THRESHOLD;
+        const statusTxt = neg ? 'OVER-ISSUED' : low ? 'LOW STOCK' : 'OK';
+        const statusColor = neg ? '#dc2626' : low ? '#d97706' : '#059669';
+        balRows += `<tr>
+          <td style="font-weight:700;color:#1a202c">${esc(row.itemType)}</td>
+          <td>${row.received}</td><td>${row.issued}</td>
+          <td style="font-weight:700">${row.balance}</td>
+          <td><strong style="color:${statusColor}">${statusTxt}</strong></td>
+        </tr>`;
+      });
+    }
+    let rcptRows = '';
+    if (!f.sRows.length) {
+      rcptRows = `<tr><td colspan="6" style="text-align:center;color:#94a3b8;padding:14px">No stock receipts in selected range</td></tr>`;
+    } else {
+      f.sRows.forEach(s => {
+        rcptRows += `<tr>
+          <td>${fmtDate(s.date)}</td>
+          <td style="font-weight:600">${esc(s.itemType)}</td>
+          <td style="font-weight:700;color:#059669">+${esc(s.qty)}</td>
+          <td>${esc(s.source||'—')}</td>
+          <td>${esc(s.notes||'—')}</td>
+          <td>${esc(s.enteredBy||'—')}</td>
+        </tr>`;
+      });
+    }
+    html += `
+      <div class="pdf-section">
+        <div class="pdf-section-title">📦 Stock Balance by Item Type <span>${summary.length} types</span></div>
+        <table class="pdf-table">
+          <colgroup><col><col><col><col><col></colgroup>
+          <thead><tr><th>Item Type</th><th>Received</th><th>Issued</th><th>Balance</th><th>Status</th></tr></thead>
+          <tbody>${balRows}</tbody>
+        </table>
+      </div>
+      <div class="pdf-section">
+        <div class="pdf-section-title">📥 Stock Receipt Log <span>${f.sRows.length} records · ${dateRange}</span></div>
+        <table class="pdf-table">
+          <colgroup><col><col><col><col><col><col></colgroup>
+          <thead><tr><th>Date</th><th>Item Type</th><th>Qty</th><th>Source / Store</th><th>Notes</th><th>Entered By</th></tr></thead>
+          <tbody>${rcptRows}</tbody>
+        </table>
       </div>`;
   }
 
