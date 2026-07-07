@@ -606,18 +606,6 @@ header {
 }
 .modal-close:hover { color: var(--text); border-color: var(--danger); color: var(--danger); }
 
-/* Overdue bank-request alert popup */
-@keyframes overduePulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.45), var(--shadow-lg); }
-  50%      { box-shadow: 0 0 0 9px rgba(239,68,68,0), var(--shadow-lg); }
-}
-#overdue-alert-modal { animation: overduePulse 1.8s ease-in-out infinite; }
-.overdue-alert-row {
-  display: flex; justify-content: space-between; align-items: flex-start;
-  gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--border);
-}
-.overdue-alert-row:last-child { border-bottom: none; }
-
 /* ============================================================
    FORMS
    ============================================================ */
@@ -1508,21 +1496,6 @@ header {
   </div>
 </div>
 
-<!-- ============================================================
-     OVERDUE BANK REQUEST ALERT — pops up over any tab once a
-     PENDING request has been waiting 1+ hour
-     ============================================================ -->
-<div class="modal-overlay" id="overdue-alert-overlay" onclick="if(event.target===this)dismissOverdueAlert()">
-  <div class="modal" id="overdue-alert-modal" style="width:480px;border-color:rgba(239,68,68,0.5)">
-    <div class="modal-title" style="color:#ff7070">🚨 Bank Request(s) Overdue</div>
-    <div id="overdue-alert-body" style="font-size:12px;color:var(--text-muted)"></div>
-    <div class="modal-actions">
-      <button class="btn btn-ghost" onclick="dismissOverdueAlert()">Dismiss</button>
-      <button class="btn btn-primary" onclick="viewOverdueRequests()">📨 View Bank Requests</button>
-    </div>
-  </div>
-</div>
-
 <!-- Loading overlay while Firebase initialises -->
 <div id="loading-overlay" style="
   position:fixed;inset:0;z-index:9999;
@@ -1649,7 +1622,6 @@ async function loadDb() {
   renderOverview();
   renderDispatch();
   renderRequests();
-  checkOverdueRequestAlerts();
   document.getElementById('loading-overlay').style.display = 'none';
 
   // Now that db.requests is loaded, start polling the PARTS REQUEST sheet
@@ -1657,13 +1629,10 @@ async function loadDb() {
   setInterval(syncPartsRequestSheet, PARTS_SHEET_POLL_MS);
 
   // Refresh the "time ago" labels on pending requests every minute, even
-  // when nothing new has synced from the sheet. The overdue-alert check
-  // runs every minute regardless of which tab is active, so a request
-  // crossing the 1-hour mark pops up no matter where the user is.
+  // when nothing new has synced from the sheet.
   setInterval(() => {
     const tab = document.getElementById('tab-requests');
     if (tab && tab.classList.contains('active')) renderRequests();
-    checkOverdueRequestAlerts();
   }, 60000);
 }
 
@@ -1807,7 +1776,6 @@ function mergeSheetRequestsIntoDb(sheetRows) {
   });
   if (changed) {
     renderOverview(); renderRequests();
-    checkOverdueRequestAlerts();
     saveRequestsToLocalStorage();
     // Bank Requests live only in the Google Sheet — never written to
     // Firebase. We still bump nextId in Firebase (it's a shared counter
@@ -2229,62 +2197,6 @@ function timeAgo(iso) {
   const overdue = ms >= REQUEST_OVERDUE_MS;
   const level   = overdue ? 'danger' : mins >= 30 ? 'warn' : 'ok';
   return { key: then, text, level, overdue };
-}
-
-/* ============================================================
-   OVERDUE BANK REQUEST — POP-UP ALERT SYSTEM
-   Independent of which tab is active. Scans db.requests every
-   time it's called; any PENDING request that has crossed the
-   1-hour mark and hasn't been alerted on yet triggers a popup.
-   Tracked in-memory only (resets on reload), so a fresh page
-   load will re-alert on anything still overdue.
-   ============================================================ */
-const _alertedOverdueIds = new Set();
-
-function checkOverdueRequestAlerts() {
-  if (!window._dbReady) return;
-  const overdueNow = db.requests.filter(r =>
-    (r.status||'PENDING') === 'PENDING' &&
-    timeAgo(r.firstSeenAt || (r.date ? r.date+'T00:00:00' : null)).overdue
-  );
-  const fresh = overdueNow.filter(r => !_alertedOverdueIds.has(r.id));
-  if (fresh.length) {
-    fresh.forEach(r => _alertedOverdueIds.add(r.id));
-    showOverdueAlertPopup(fresh);
-  }
-  // Clean up ids for requests that are no longer pending/overdue (e.g.
-  // handed over, or reverted back to pending later) so they can alert again.
-  const stillValidIds = new Set(overdueNow.map(r => r.id));
-  [..._alertedOverdueIds].forEach(id => { if (!stillValidIds.has(id)) _alertedOverdueIds.delete(id); });
-}
-
-function showOverdueAlertPopup(list) {
-  const body    = document.getElementById('overdue-alert-body');
-  const overlay = document.getElementById('overdue-alert-overlay');
-  if (!body || !overlay) return;
-  const rows = list.map(r => {
-    const age = timeAgo(r.firstSeenAt || (r.date ? r.date+'T00:00:00' : null));
-    return `<div class="overdue-alert-row">
-      <div>
-        <div style="font-weight:700;color:var(--text)">${esc(r.bank||'—')} · ${esc(r.tid||r.serial||'—')}</div>
-        <div style="font-size:11px;color:var(--text-dim)">${esc(r.merchant||'—')} — ${esc(r.itemType||'—')}</div>
-      </div>
-      <div style="font-size:11px;font-weight:700;color:var(--danger);white-space:nowrap">⏱ ${age.text}</div>
-    </div>`;
-  }).join('');
-  body.innerHTML = `<p style="margin-bottom:8px">${list.length} request${list.length!==1?'s have':' has'} been PENDING for over 1 hour — please action ${list.length!==1?'them':'it'} now:</p>${rows}`;
-  overlay.classList.add('open');
-}
-
-function dismissOverdueAlert() {
-  const overlay = document.getElementById('overdue-alert-overlay');
-  if (overlay) overlay.classList.remove('open');
-}
-
-function viewOverdueRequests() {
-  dismissOverdueAlert();
-  const btn = document.querySelector(`.tab-btn[onclick*="'requests'"]`);
-  if (btn) switchTab('requests', btn);
 }
 
 function monthKey(d) {
@@ -4270,7 +4182,7 @@ updateClock(); setInterval(updateClock, 30000);
    KEYBOARD SHORTCUTS
    ============================================================ */
 document.addEventListener('keydown', function(e) {
-  if (e.key === 'Escape') { closeModal(); closePwModal(); closeExportModal(); closePdfModal(); closeRowPwPrompt(); closeRowTogglePrompt(); closeBackupView(); dismissOverdueAlert(); }
+  if (e.key === 'Escape') { closeModal(); closePwModal(); closeExportModal(); closePdfModal(); closeRowPwPrompt(); closeRowTogglePrompt(); closeBackupView(); }
 });
 
 /* ============================================================
