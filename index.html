@@ -83,11 +83,12 @@
     if (!snap.exists() || !window._dbReady) return;
     const remote = snap.data();
     // Only apply if it differs from local (avoid echo of own saves)
-    if (JSON.stringify(remote) === JSON.stringify({staff: db.staff, dispatch: db.dispatch, returns: db.returns, requests: db.requests, nextId: db.nextId})) return;
+    // NOTE: "requests" (Bank Requests) is intentionally excluded — that data
+    // lives only in the PARTS REQUEST Google Sheet, never in Firebase.
+    if (JSON.stringify(remote) === JSON.stringify({staff: db.staff, dispatch: db.dispatch, returns: db.returns, nextId: db.nextId})) return;
     db.staff    = remote.staff    || [];
     db.dispatch = remote.dispatch || [];
     db.returns  = remote.returns  || [];
-    db.requests = remote.requests || [];
     db.nextId   = remote.nextId   || 1;
     renderOverview();
     renderDispatch();
@@ -1195,6 +1196,7 @@ header {
         <div class="kpi-label">Total Returned</div>
         <div class="kpi-value" id="kpi-returned">0</div>
         <div class="kpi-sub">Broken parts received back</div>
+        <div id="kpi-returned-mismatch" style="display:none;font-size:10px;color:var(--warn);margin-top:6px;line-height:1.4"></div>
       </div>
       <div class="kpi-card warn">
         <div class="kpi-label">Outstanding</div>
@@ -1339,7 +1341,7 @@ header {
        BANK REQUESTS TAB
        ====================================================== -->
   <div id="tab-requests" class="view">
-    <div class="info-box">ℹ️ Requests entered by bank agents into the <strong>PARTS REQUEST</strong> Google Sheet appear here automatically (synced every ~45s). Mark each one <strong>Handed Over</strong> once the item is given out — this writes the status straight back to the sheet's AVAILABLE column. You can still log a one-off request manually with "+ New Request" if needed. <span style="color:var(--text-dim)">Note: deleting a synced row here only hides it locally — remove the row in the Sheet itself to delete it for good.</span></div>
+    <div class="info-box">ℹ️ Requests entered by bank agents into the <strong>PARTS REQUEST</strong> Google Sheet appear here automatically (synced every ~45s). Mark each one <strong>Handed Over</strong> once the item is given out — this writes the status straight back to the sheet's AVAILABLE column and removes it from the list below. Pending requests are sorted <strong>oldest first</strong> with how long they've been waiting, so the ones needing attention rise to the top. Switch the status filter to "All Statuses" or "Handed Over" to see completed ones again. You can still log a one-off request manually with "+ New Request" if needed. <span style="color:var(--text-dim)">Note: deleting a synced row here only hides it locally — remove the row in the Sheet itself to delete it for good.</span></div>
     <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:20px;">
       <div class="kpi-card warn">
         <div class="kpi-label">Pending Requests</div>
@@ -1362,7 +1364,7 @@ header {
       <select class="filter-select" id="request-filter-bank" onchange="renderRequests()"><option value="">All Banks</option></select>
       <select class="filter-select" id="request-filter-status" onchange="renderRequests()">
         <option value="">All Statuses</option>
-        <option value="PENDING">⏳ Pending</option>
+        <option value="PENDING" selected>⏳ Pending</option>
         <option value="HANDED_OVER">✅ Handed Over</option>
       </select>
       <button class="btn btn-primary btn-sm" onclick="openRequestModal()">＋ New Request</button>
@@ -1542,13 +1544,15 @@ const db = {
 window._dbReady = false;
 
 // Persist the entire db to Firestore
+// NOTE: "requests" (Bank Requests) is deliberately never sent to Firebase —
+// that data is owned entirely by the PARTS REQUEST Google Sheet (see the
+// PARTS REQUEST SHEET SYNC block below).
 async function saveDb() {
   if (window._fbSave) {
     await window._fbSave({
       staff:    db.staff,
       dispatch: db.dispatch,
       returns:  db.returns,
-      requests: db.requests,
       nextId:   db.nextId,
     });
   }
@@ -1562,7 +1566,6 @@ async function loadDb() {
       db.staff    = data.staff    || [];
       db.dispatch = data.dispatch || [];
       db.returns  = data.returns  || [];
-      db.requests = data.requests || [];
       db.nextId   = data.nextId   || 1;
     }
   }
@@ -1575,6 +1578,13 @@ async function loadDb() {
   // Now that db.requests is loaded, start polling the PARTS REQUEST sheet
   syncPartsRequestSheet();
   setInterval(syncPartsRequestSheet, PARTS_SHEET_POLL_MS);
+
+  // Refresh the "time ago" labels on pending requests every minute, even
+  // when nothing new has synced from the sheet.
+  setInterval(() => {
+    const tab = document.getElementById('tab-requests');
+    if (tab && tab.classList.contains('active')) renderRequests();
+  }, 60000);
 }
 
 /* ============================================================
@@ -1653,6 +1663,7 @@ function mergeSheetRequestsIntoDb(sheetRows) {
         status:    status,
         enteredBy: 'PARTS REQUEST Sheet',
         source:    'sheet',
+        firstSeenAt: new Date().toISOString(),
       });
       changed = true;
     } else {
@@ -1680,11 +1691,12 @@ function mergeSheetRequestsIntoDb(sheetRows) {
   });
   if (changed) {
     renderOverview(); renderRequests();
-    // Save ONLY the requests/nextId fields back to Firebase — never a full
-    // saveDb() here, so this background sync can't ever wipe out
-    // staff/dispatch/returns even if it runs before/around the initial load.
+    // Bank Requests live only in the Google Sheet — never written to
+    // Firebase. We still bump nextId in Firebase (it's a shared counter
+    // also used for staff IDs), but the requests array itself stays local,
+    // repopulated from the sheet on every poll/reload.
     if (window._fbSavePartial) {
-      window._fbSavePartial({ requests: db.requests, nextId: db.nextId });
+      window._fbSavePartial({ nextId: db.nextId });
     }
   }
 }
@@ -2059,6 +2071,26 @@ function fmtDate(d) {
   return dt.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'});
 }
 
+// Returns { key, text, level } describing how long ago `iso` was, for
+// showing an "age" indicator on pending requests. `level` is 'ok' | 'warn' | 'danger'
+// so older/more urgent requests can be visually flagged.
+function timeAgo(iso) {
+  if (!iso) return { key: 0, text: '—', level: 'ok' };
+  const then = new Date(iso).getTime();
+  if (isNaN(then)) return { key: 0, text: '—', level: 'ok' };
+  const ms   = Math.max(0, Date.now() - then);
+  const mins = Math.floor(ms / 60000);
+  const hrs  = Math.floor(mins / 60);
+  const days = Math.floor(hrs / 24);
+  let text;
+  if (days > 0)       text = `${days}d ${hrs % 24}h ago`;
+  else if (hrs > 0)   text = `${hrs}h ${mins % 60}m ago`;
+  else if (mins > 0)  text = `${mins}m ago`;
+  else                text = 'just now';
+  const level = days >= 1 ? 'danger' : hrs >= 4 ? 'warn' : 'ok';
+  return { key: then, text, level };
+}
+
 function monthKey(d) {
   if (!d) return '';
   const dt = new Date(d);
@@ -2120,11 +2152,38 @@ function renderOverview() {
   const outstanding = db.dispatch.filter(d => getStatus(d) !== 'RETURNED');
   const overdue     = outstanding.filter(d => new Date(d.dueDate) < today && d.dueDate);
 
+  // "Returned" here means "dispatch items whose status resolves to RETURNED",
+  // NOT a raw count of the Return Log. This guarantees Dispatched = Returned
+  // + Outstanding always holds, since Outstanding is defined as the
+  // complement of this exact same set.
+  const returnedItems = db.dispatch.filter(d => getStatus(d) === 'RETURNED');
+
+  // Return Log rows that don't match ANY dispatch record by TID or serial —
+  // usually a typo in the Return Log, a duplicate return entry, or a return
+  // logged for a dispatch record that was since edited/deleted. These are
+  // the reason raw db.returns.length can drift from the reconciled numbers.
+  const orphanReturns = db.returns.filter(r =>
+    !db.dispatch.some(d => (r.tid && d.tid === r.tid) || (r.serial && d.serial === r.serial))
+  );
+
   document.getElementById('kpi-total').textContent       = db.dispatch.length;
-  document.getElementById('kpi-returned').textContent    = db.returns.length;
+  document.getElementById('kpi-returned').textContent    = returnedItems.length;
   document.getElementById('kpi-outstanding').textContent = outstanding.length;
   document.getElementById('kpi-overdue').textContent     = overdue.length;
   document.getElementById('kpi-techs').textContent       = new Set(outstanding.map(d=>d.tech)).size;
+
+  // Surface a warning if the raw Return Log count doesn't match the number
+  // of dispatch items actually reconciled as returned — this is the signal
+  // that there's bad/orphaned data in the Return Log worth cleaning up.
+  const mismatchEl = document.getElementById('kpi-returned-mismatch');
+  if (mismatchEl) {
+    if (orphanReturns.length > 0) {
+      mismatchEl.style.display = '';
+      mismatchEl.textContent = `⚠️ ${orphanReturns.length} entr${orphanReturns.length===1?'y':'ies'} in the Return Log ${orphanReturns.length===1?'doesn\'t':'don\'t'} match any dispatch record (${db.returns.length} logged in total) — check for a typo'd TID/serial or a duplicate entry.`;
+    } else {
+      mismatchEl.style.display = 'none';
+    }
+  }
 
   // Bar chart — outstanding by tech
   const tc = {};
@@ -2448,14 +2507,31 @@ function renderRequests() {
   document.getElementById('req-kpi-pending').textContent = db.requests.filter(r=>(r.status||'PENDING')==='PENDING').length;
   document.getElementById('req-kpi-handed').textContent  = db.requests.filter(r=>r.status==='HANDED_OVER').length;
 
-  document.getElementById('request-tbody').innerHTML = rows.length ? [...rows].reverse().map(r => {
+  // Age of each row = time since it was first seen by this app (falls back
+  // to its DATE field for older records logged before this was tracked).
+  const ageOf = r => timeAgo(r.firstSeenAt || (r.date ? r.date+'T00:00:00' : null));
+
+  // Pending requests: oldest (most overdue) first, so they float to the top.
+  // Handed-over requests: most recently completed first.
+  const sorted = [...rows].sort((a, b) => {
+    const aPending = (a.status||'PENDING') === 'PENDING';
+    const bPending = (b.status||'PENDING') === 'PENDING';
+    if (aPending !== bPending) return aPending ? -1 : 1;
+    const aKey = ageOf(a).key, bKey = ageOf(b).key;
+    return aPending ? aKey - bKey : bKey - aKey;
+  });
+
+  const levelColor = { ok: 'var(--text-dim)', warn: 'var(--warn)', danger: 'var(--danger)' };
+
+  document.getElementById('request-tbody').innerHTML = sorted.length ? sorted.map(r => {
     const idx = db.requests.indexOf(r);
     const handed = r.status === 'HANDED_OVER';
     const pc = handed ? 'pill-clear' : 'pill-pending';
     const ic = handed ? '✅' : '⏳';
     const label = handed ? 'HANDED OVER' : 'PENDING';
+    const age = ageOf(r);
     return `<tr>
-      <td class="mono">${fmtDate(r.date)}</td>
+      <td class="mono">${fmtDate(r.date)}${!handed ? `<div style="font-size:9px;font-weight:600;color:${levelColor[age.level]};margin-top:2px">⏱ ${age.text}</div>` : ''}</td>
       <td class="mono text-accent">${esc(r.tid||'—')}</td>
       <td class="mono text-dim">${esc(r.serial||'—')}</td>
       <td class="mono text-dim">${esc(r.model||'—')}</td>
@@ -2518,8 +2594,14 @@ function renderOutstanding() {
 
   const cards = techs.map((s,i) => {
     const disp = db.dispatch.filter(d => d.tech===s.name);
-    const ret  = db.returns.filter(r => r.tech===s.name);
+    // "Returned" is derived from this tech's own dispatch records matched
+    // as RETURNED — NOT a raw count of Return Log rows tagged with their
+    // name. That raw-count approach broke down whenever a return got logged
+    // under a different/mistyped technician name than the original dispatch,
+    // making Sent/Returned/Pending disagree with each other. Deriving all
+    // three from the same `disp` set guarantees Sent = Returned + Pending.
     const out  = disp.filter(d => getStatus(d) !== 'RETURNED');
+    const ret  = disp.filter(d => getStatus(d) === 'RETURNED');
     const ov   = out.filter(d => d.dueDate && new Date(d.dueDate) < today);
     const pct  = disp.length ? Math.round(ret.length/disp.length*100) : 100;
     const col  = getColor(s.name, i);
@@ -3067,6 +3149,7 @@ function saveRequest(editIdx) {
   };
   if (editIdx == null) {
     data.status = 'PENDING';
+    data.firstSeenAt = new Date().toISOString();
     db.requests.push(data);
     closeModal(); showToast('✅ Request logged!');
   } else {
@@ -3525,8 +3608,11 @@ function doExport() {
       ['Technician','Area','Total Sent','Total Returned','Outstanding','Overdue','Return Rate','Status','Outstanding TIDs'],
       db.staff.filter(s=>s.role==='TECHNICIAN').map(s => {
         const disp=db.dispatch.filter(d=>d.tech===s.name);
-        const ret =db.returns.filter(r=>r.tech===s.name);
+        // Derived from this tech's own dispatch records (matched via
+        // getStatus), not a raw Return Log count — keeps Sent = Returned +
+        // Outstanding consistent, same fix as the Outstanding tab.
         const out =disp.filter(d=>getStatus(d)!=='RETURNED');
+        const ret =disp.filter(d=>getStatus(d)==='RETURNED');
         const ov  =out.filter(d=>d.dueDate && new Date(d.dueDate)<t2);
         return [s.name,s.area,disp.length,ret.length,out.length,ov.length,
           disp.length?Math.round(ret.length/disp.length*100)+'%':'100%',
@@ -3791,8 +3877,11 @@ function doPdfExport() {
     let cards = '';
     techs.forEach(s => {
       const disp   = db.dispatch.filter(d => d.tech === s.name);
-      const ret    = db.returns.filter(r  => r.tech === s.name);
+      // Derived from this tech's own dispatch records (matched via
+      // getStatus), not a raw Return Log count — same fix as the
+      // Outstanding tab, keeps Sent = Returned + Out consistent.
       const out    = disp.filter(d => getStatus(d) !== 'RETURNED');
+      const ret    = disp.filter(d => getStatus(d) === 'RETURNED');
       const ov     = out.filter(d => d.dueDate && new Date(d.dueDate) < t2);
       const rate   = disp.length ? Math.round(ret.length / disp.length * 100) : 100;
       const status = ov.length>0 ? 'OVERDUE' : out.length>0 ? 'PENDING' : 'CLEAR';
