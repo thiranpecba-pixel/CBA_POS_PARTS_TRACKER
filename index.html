@@ -1360,6 +1360,13 @@ header {
         <div class="kpi-sub">All bank agent requests</div>
       </div>
     </div>
+    <div class="card" style="margin-bottom:20px;">
+      <div class="card-header">
+        <div class="card-title">📦 Pending Items by Type</div>
+        <span class="card-badge badge-blue" id="request-pending-items-badge">0 ITEMS</span>
+      </div>
+      <div id="request-pending-item-breakdown" style="padding:16px 20px;"></div>
+    </div>
     <div class="action-bar">
       <input class="search-input" id="request-search" type="text" placeholder="🔍  Search TID, serial, merchant, bank, agent…" oninput="renderRequests()">
       <select class="filter-select" id="request-filter-bank" onchange="renderRequests()"><option value="">All Banks</option></select>
@@ -2608,6 +2615,28 @@ function renderRequests() {
   document.getElementById('req-kpi-pending').textContent = db.requests.filter(r=>(r.status||'PENDING')==='PENDING').length;
   document.getElementById('req-kpi-handed').textContent  = db.requests.filter(r=>r.status==='HANDED_OVER').length;
 
+  // Pending items broken down by item type (total amount of each item
+  // currently awaiting hand-over — ignores search/bank/status filters
+  // above, same as the KPI cards, so it always reflects the true total).
+  const pendingReqs = db.requests.filter(r => (r.status||'PENDING')==='PENDING');
+  const pic = {};
+  pendingReqs.forEach(r => { const key = r.itemType || 'Unspecified'; pic[key] = (pic[key]||0)+1; });
+  const picEntries = Object.entries(pic).sort((a,b) => b[1]-a[1]);
+  const picBadge = document.getElementById('request-pending-items-badge');
+  if (picBadge) picBadge.textContent = pendingReqs.length + ' ITEM' + (pendingReqs.length!==1?'S':'');
+  const picBox = document.getElementById('request-pending-item-breakdown');
+  if (picBox) {
+    picBox.innerHTML = picEntries.length
+      ? `<div class="bar-grid">${picEntries.map(([item,cnt]) => `
+          <div class="bar-row">
+            <div class="bar-row-top">
+              <div class="bar-label" title="${esc(item)}">${esc(item)}</div>
+              <div class="bar-val" style="color:var(--warn)">${cnt}</div>
+            </div>
+          </div>`).join('')}</div>`
+      : `<div class="empty-state" style="padding:12px 0"><div class="icon">✅</div><p>No pending requests</p></div>`;
+  }
+
   // Age of each row = time since it was first seen by this app (falls back
   // to its DATE field for older records logged before this was tracked).
   const ageOf = r => timeAgo(r.firstSeenAt || (r.date ? r.date+'T00:00:00' : null));
@@ -2658,7 +2687,7 @@ function renderRequests() {
       <td>${esc(r.itemType||'—')}</td>
       <td class="text-dim">${esc(r.agent||'—')}${r.source==='sheet'?'<div style="font-size:9px;color:var(--accent2);margin-top:2px">📊 From Sheet</div>':''}</td>
       <td>
-        <button class="pill ${pc}" style="border:none;cursor:pointer" title="Click to toggle status" onclick="toggleRequestStatus(${idx})">${ic} ${label}</button>
+        <button class="pill ${pc}" style="border:none;cursor:pointer" title="Click to toggle status" onclick="confirmRequestToggle(${idx},this)">${ic} ${label}</button>
         ${handed && r.handedOverDate ? `<div style="font-size:9px;color:var(--text-dim);margin-top:3px">by ${esc(r.handedOverBy||'—')} · ${fmtDate(r.handedOverDate)}</div>` : ''}
       </td>
       <td class="text-dim">${esc(r.enteredBy||'—')}</td>
@@ -3390,14 +3419,14 @@ document.addEventListener('click', function(e) {
   const confirmBtn = e.target.closest('.row-pw-confirm');
   const cancelBtn  = e.target.closest('.row-pw-cancel');
   if (delBtn)     { confirmRowDelete(delBtn.dataset.log, parseInt(delBtn.dataset.idx,10), delBtn); return; }
-  if (confirmBtn) { executeRowDelete(); return; }
-  if (cancelBtn)  { closeRowPwPrompt(); return; }
+  if (confirmBtn) { if (_rowDelTarget) executeRowDelete(); else if (_rowToggleTarget != null) executeRowToggle(); return; }
+  if (cancelBtn)  { closeRowPwPrompt(); closeRowTogglePrompt(); return; }
 });
 
 document.addEventListener('keydown', function(e) {
-  if (!_rowDelTarget) return;
-  if (e.key==='Enter')  executeRowDelete();
-  if (e.key==='Escape') closeRowPwPrompt();
+  if (!_rowDelTarget && _rowToggleTarget == null) return;
+  if (e.key==='Enter')  { if (_rowDelTarget) executeRowDelete(); else executeRowToggle(); }
+  if (e.key==='Escape') { closeRowPwPrompt(); closeRowTogglePrompt(); }
 });
 
 function _logArr(logType) {
@@ -3427,6 +3456,42 @@ function closeRowPwPrompt() {
   const el = document.getElementById('row-pw-prompt');
   if (el) { const prev = el.previousElementSibling; if (prev) prev.style.background=''; el.remove(); }
   _rowDelTarget = null;
+}
+
+/* ── Status-toggle confirmation (same inline pattern as delete) ── */
+let _rowToggleTarget = null;
+
+function confirmRequestToggle(idx, btn) {
+  closeRowPwPrompt(); closeRowTogglePrompt();
+  const r = db.requests[idx];
+  if (!r) return;
+  const goingBackToPending = r.status === 'HANDED_OVER';
+  const label = (r.bank || '—') + ' · ' + (r.tid || r.serial || '—');
+  const actionText = goingBackToPending ? 'mark back as PENDING' : 'mark as HANDED OVER';
+  const tr = btn.closest('tr');
+  const pr = document.createElement('tr');
+  pr.className = 'row-pw-row'; pr.id = 'row-toggle-prompt';
+  pr.innerHTML = `<td colspan="12"><div class="row-pw-inner">
+    <span>${goingBackToPending ? '↩️' : '✅'} <strong>${esc(label)}</strong> — ${actionText}?</span>
+    <button class="row-pw-confirm">Yes, Confirm</button>
+    <button class="row-pw-cancel">Cancel</button>
+  </div></td>`;
+  tr.insertAdjacentElement('afterend', pr);
+  tr.style.background = 'rgba(59,127,245,0.06)';
+  _rowToggleTarget = idx;
+}
+
+function closeRowTogglePrompt() {
+  const el = document.getElementById('row-toggle-prompt');
+  if (el) { const prev = el.previousElementSibling; if (prev) prev.style.background=''; el.remove(); }
+  _rowToggleTarget = null;
+}
+
+function executeRowToggle() {
+  if (_rowToggleTarget == null) return;
+  const idx = _rowToggleTarget;
+  closeRowTogglePrompt();
+  toggleRequestStatus(idx);
 }
 
 function executeRowDelete() {
@@ -4117,7 +4182,7 @@ updateClock(); setInterval(updateClock, 30000);
    KEYBOARD SHORTCUTS
    ============================================================ */
 document.addEventListener('keydown', function(e) {
-  if (e.key === 'Escape') { closeModal(); closePwModal(); closeExportModal(); closePdfModal(); closeRowPwPrompt(); closeBackupView(); }
+  if (e.key === 'Escape') { closeModal(); closePwModal(); closeExportModal(); closePdfModal(); closeRowPwPrompt(); closeRowTogglePrompt(); closeBackupView(); }
 });
 
 /* ============================================================
