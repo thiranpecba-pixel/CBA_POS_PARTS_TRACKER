@@ -1341,7 +1341,7 @@ header {
        BANK REQUESTS TAB
        ====================================================== -->
   <div id="tab-requests" class="view">
-    <div class="info-box">ℹ️ Requests entered by bank agents into the <strong>PARTS REQUEST</strong> Google Sheet appear here automatically (synced every ~45s). Mark each one <strong>Handed Over</strong> once the item is given out — this writes the status straight back to the sheet's AVAILABLE column and removes it from the list below. Pending requests are sorted <strong>oldest first</strong> with how long they've been waiting, so the ones needing attention rise to the top. Requests waiting <strong>over 1 hour</strong> are flagged in red. Switch the status filter to "All Statuses" or "Handed Over" to see completed ones again. You can still log a one-off request manually with "+ New Request" if needed. <span style="color:var(--text-dim)">Note: deleting a synced row here only hides it locally — remove the row in the Sheet itself to delete it for good.</span></div>
+    <div class="info-box">ℹ️ Requests entered by bank agents into the <strong>PARTS REQUEST</strong> Google Sheet appear here automatically (synced every ~45s). Mark each one <strong>Handed Over</strong> once the item is given out — this writes the status straight back to the sheet's AVAILABLE column and removes it from the list below. Pending requests are sorted <strong>oldest first</strong> with how long they've been waiting — the same wait time shows on every terminal, since it's the sheet's FIRST SEEN column, not just this device's clock. Requests waiting <strong>over 1 hour</strong> are flagged in red. Switch the status filter to "All Statuses" or "Handed Over" to see completed ones again. You can still log a one-off request manually with "+ New Request" if needed. <span style="color:var(--text-dim)">Note: deleting a synced row here only hides it locally — remove the row in the Sheet itself to delete it for good.</span></div>
     <div id="request-overdue-banner" style="display:none;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.35);color:#ff7070;border-radius:8px;padding:10px 14px;margin-bottom:16px;font-size:13px;font-weight:600"></div>
     <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:20px;">
       <div class="kpi-card warn">
@@ -1523,6 +1523,15 @@ const ADMIN_PASSWORD = 'CBA2024';
    we write the AVAILABLE column back to that same row via a small
    Google Apps Script Web App (see APPS_SCRIPT_SETUP.md for the
    code + deploy steps) — paste its /exec URL below once deployed.
+
+   Column K of that sheet tab must be a "FIRST SEEN" column (blank
+   until a terminal fills it in). It's how every terminal agrees on
+   the exact same "how long has this been waiting" time — whichever
+   terminal notices a request first stamps this column, and every
+   other terminal then reads that same value instead of timing its
+   own local guess. The Apps Script must be updated to accept and
+   write a `firstSeen` field the same way it already does `available`
+   — see the note above pushFirstSeenToSheet() further down.
    ============================================================ */
 const PARTS_SHEET_ID  = '1u1Bl01xBA2VAq5J-zc9rYH1W60ZKR35n3ZUFiFbMZvI';
 const PARTS_SHEET_GID = '698981557'; // the "PARTS REQUEST" tab
@@ -1648,6 +1657,18 @@ async function fetchPartsRequestSheet() {
       const y = Number(m[1]), mo = Number(m[2]), da = Number(m[3]);
       return `${y}-${String(mo + 1).padStart(2, '0')}-${String(da).padStart(2, '0')}`;
     };
+    // Same as getDate() but keeps the time portion too (gviz returns
+    // "Date(y,m,d,h,mi,s)" for datetime cells) — used for the FIRST SEEN
+    // column, which needs real time-of-day precision, not just a date.
+    const getDateTime = (cells, i) => {
+      const raw = get(cells, i);
+      if (!raw) return '';
+      const m = raw.match(/^Date\((\d+),(\d+),(\d+)(?:,(\d+),(\d+),(\d+))?/);
+      if (!m) return raw;
+      const y=Number(m[1]), mo=Number(m[2]), da=Number(m[3]);
+      const h=Number(m[4]||0), mi=Number(m[5]||0), se=Number(m[6]||0);
+      return new Date(y, mo, da, h, mi, se).toISOString();
+    };
     const parsed = [];
     rows.forEach((row, i) => {
       const c = row.c || [];
@@ -1666,6 +1687,10 @@ async function fetchPartsRequestSheet() {
         address:  get(c, 7),
         itemType: get(c, 8),
         available: (get(c, 9) || 'PENDING').toUpperCase(),
+        // Column K — "FIRST SEEN": written once by whichever terminal first
+        // notices the row, so every terminal shows the exact same age for
+        // it from then on. Blank until someone writes it.
+        firstSeen: getDateTime(c, 10) || null,
       });
     });
     return parsed;
@@ -1681,6 +1706,12 @@ function mergeSheetRequestsIntoDb(sheetRows) {
     const status = sr.available === 'COMPLETE' ? 'HANDED_OVER' : 'PENDING';
     let existing = db.requests.find(r => r._sheetRow === sr.sheetRow);
     if (!existing) {
+      // If another terminal already wrote a FIRST SEEN value for this row,
+      // use it (so everyone agrees on the same age). Otherwise this
+      // terminal is the first to notice it — stamp "now" locally AND write
+      // it back to the sheet's FIRST SEEN column so every other terminal
+      // picks up that exact same timestamp on their next poll.
+      const firstSeenAt = sr.firstSeen || new Date().toISOString();
       db.requests.push({
         id:        db.nextId++,
         _sheetRow: sr.sheetRow,
@@ -1696,9 +1727,11 @@ function mergeSheetRequestsIntoDb(sheetRows) {
         status:    status,
         enteredBy: 'PARTS REQUEST Sheet',
         source:    'sheet',
-        firstSeenAt: new Date().toISOString(),
+        firstSeenAt: firstSeenAt,
+        _firstSeenPushed: !!sr.firstSeen,
       });
       changed = true;
+      if (!sr.firstSeen) pushFirstSeenToSheet(sr.sheetRow, firstSeenAt);
     } else {
       // Keep basic fields fresh in case they were edited in the sheet
       if (existing.tid !== sr.tid)           { existing.tid = sr.tid; changed = true; }
@@ -1708,6 +1741,18 @@ function mergeSheetRequestsIntoDb(sheetRows) {
       if (existing.address !== sr.address)   { existing.address = sr.address; changed = true; }
       if (existing.bank !== sr.bank)         { existing.bank = sr.bank; changed = true; }
       if (existing.itemType !== sr.itemType) { existing.itemType = sr.itemType; changed = true; }
+      // The sheet's FIRST SEEN column is authoritative once it has a value —
+      // adopt it so this terminal shows the exact same age as everyone else.
+      if (sr.firstSeen && existing.firstSeenAt !== sr.firstSeen) {
+        existing.firstSeenAt = sr.firstSeen;
+        existing._firstSeenPushed = true;
+        changed = true;
+      } else if (!sr.firstSeen && existing.firstSeenAt && !existing._firstSeenPushed) {
+        // We stamped a time locally but the sheet still shows it blank —
+        // our earlier write may not have landed. Retry once per poll.
+        pushFirstSeenToSheet(sr.sheetRow, existing.firstSeenAt);
+        existing._firstSeenPushed = true;
+      }
       // The sheet is the source of truth for status, unless we have a
       // write-back in flight for this exact row (avoid flip-flopping
       // back to the old value before the sheet edit has propagated).
@@ -1764,6 +1809,25 @@ async function pushStatusToSheet(sheetRow, newAvailable) {
     return false;
   } finally {
     setTimeout(() => { window._pendingSheetWriteRow = null; }, PARTS_SHEET_POLL_MS + 5000);
+  }
+}
+
+// Writes the FIRST SEEN column (col K) for a row, but ONLY if it's still
+// blank — the Apps Script side must check-then-set so that whichever
+// terminal notices a request first "wins" and everyone converges on the
+// same timestamp, even if two terminals spot it at nearly the same time.
+async function pushFirstSeenToSheet(sheetRow, iso) {
+  if (!PARTS_SHEET_WRITE_URL || PARTS_SHEET_WRITE_URL.includes('PASTE_YOUR')) return false;
+  try {
+    await fetch(PARTS_SHEET_WRITE_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ row: sheetRow, firstSeen: iso, gid: PARTS_SHEET_GID }),
+    });
+    return true;
+  } catch (e) {
+    console.error('Failed to write FIRST SEEN back to sheet:', e);
+    return false;
   }
 }
 
