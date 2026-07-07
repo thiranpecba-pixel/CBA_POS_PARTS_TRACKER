@@ -1341,7 +1341,8 @@ header {
        BANK REQUESTS TAB
        ====================================================== -->
   <div id="tab-requests" class="view">
-    <div class="info-box">ℹ️ Requests entered by bank agents into the <strong>PARTS REQUEST</strong> Google Sheet appear here automatically (synced every ~45s). Mark each one <strong>Handed Over</strong> once the item is given out — this writes the status straight back to the sheet's AVAILABLE column and removes it from the list below. Pending requests are sorted <strong>oldest first</strong> with how long they've been waiting, so the ones needing attention rise to the top. Switch the status filter to "All Statuses" or "Handed Over" to see completed ones again. You can still log a one-off request manually with "+ New Request" if needed. <span style="color:var(--text-dim)">Note: deleting a synced row here only hides it locally — remove the row in the Sheet itself to delete it for good.</span></div>
+    <div class="info-box">ℹ️ Requests entered by bank agents into the <strong>PARTS REQUEST</strong> Google Sheet appear here automatically (synced every ~45s). Mark each one <strong>Handed Over</strong> once the item is given out — this writes the status straight back to the sheet's AVAILABLE column and removes it from the list below. Pending requests are sorted <strong>oldest first</strong> with how long they've been waiting, so the ones needing attention rise to the top. Requests waiting <strong>over 1 hour</strong> are flagged in red. Switch the status filter to "All Statuses" or "Handed Over" to see completed ones again. You can still log a one-off request manually with "+ New Request" if needed. <span style="color:var(--text-dim)">Note: deleting a synced row here only hides it locally — remove the row in the Sheet itself to delete it for good.</span></div>
+    <div id="request-overdue-banner" style="display:none;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.35);color:#ff7070;border-radius:8px;padding:10px 14px;margin-bottom:16px;font-size:13px;font-weight:600"></div>
     <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:20px;">
       <div class="kpi-card warn">
         <div class="kpi-label">Pending Requests</div>
@@ -1543,11 +1544,42 @@ const db = {
 // Flag used by the real-time listener to avoid acting before init
 window._dbReady = false;
 
+/* ------------------------------------------------------------
+   Bank Requests local persistence (browser localStorage ONLY —
+   never Firebase). Without this, every page refresh wiped
+   db.requests back to empty, so the sheet-sync treated every row
+   as brand new again and "time waiting" always showed "just now".
+   Storing it locally means firstSeenAt (and any local-only edits)
+   survive a refresh on this terminal, while the Google Sheet stays
+   the single source of truth for the requests' actual content.
+   ------------------------------------------------------------ */
+const REQUESTS_LS_KEY = 'cba_bank_requests_v1';
+
+function loadRequestsFromLocalStorage() {
+  try {
+    const raw = localStorage.getItem(REQUESTS_LS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch (e) {
+    console.error('Failed to read bank requests from local storage:', e);
+    return [];
+  }
+}
+
+function saveRequestsToLocalStorage() {
+  try {
+    localStorage.setItem(REQUESTS_LS_KEY, JSON.stringify(db.requests));
+  } catch (e) {
+    console.error('Failed to save bank requests to local storage:', e);
+  }
+}
+
 // Persist the entire db to Firestore
 // NOTE: "requests" (Bank Requests) is deliberately never sent to Firebase —
 // that data is owned entirely by the PARTS REQUEST Google Sheet (see the
-// PARTS REQUEST SHEET SYNC block below).
+// PARTS REQUEST SHEET SYNC block below). It's kept in localStorage instead
+// so it survives a page refresh on this terminal.
 async function saveDb() {
+  saveRequestsToLocalStorage();
   if (window._fbSave) {
     await window._fbSave({
       staff:    db.staff,
@@ -1569,6 +1601,7 @@ async function loadDb() {
       db.nextId   = data.nextId   || 1;
     }
   }
+  db.requests = loadRequestsFromLocalStorage();
   window._dbReady = true;
   renderOverview();
   renderDispatch();
@@ -1691,6 +1724,7 @@ function mergeSheetRequestsIntoDb(sheetRows) {
   });
   if (changed) {
     renderOverview(); renderRequests();
+    saveRequestsToLocalStorage();
     // Bank Requests live only in the Google Sheet — never written to
     // Firebase. We still bump nextId in Firebase (it's a shared counter
     // also used for staff IDs), but the requests array itself stays local,
@@ -2071,13 +2105,15 @@ function fmtDate(d) {
   return dt.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'});
 }
 
-// Returns { key, text, level } describing how long ago `iso` was, for
-// showing an "age" indicator on pending requests. `level` is 'ok' | 'warn' | 'danger'
-// so older/more urgent requests can be visually flagged.
+// Returns { key, text, level, overdue } describing how long ago `iso` was,
+// for showing an "age" indicator on pending requests. `overdue` flips true
+// once a request has been waiting 1+ hour, which is when it should show
+// red with a warning message so it can't be missed.
+const REQUEST_OVERDUE_MS = 60 * 60 * 1000; // 1 hour
 function timeAgo(iso) {
-  if (!iso) return { key: 0, text: '—', level: 'ok' };
+  if (!iso) return { key: 0, text: '—', level: 'ok', overdue: false };
   const then = new Date(iso).getTime();
-  if (isNaN(then)) return { key: 0, text: '—', level: 'ok' };
+  if (isNaN(then)) return { key: 0, text: '—', level: 'ok', overdue: false };
   const ms   = Math.max(0, Date.now() - then);
   const mins = Math.floor(ms / 60000);
   const hrs  = Math.floor(mins / 60);
@@ -2087,8 +2123,9 @@ function timeAgo(iso) {
   else if (hrs > 0)   text = `${hrs}h ${mins % 60}m ago`;
   else if (mins > 0)  text = `${mins}m ago`;
   else                text = 'just now';
-  const level = days >= 1 ? 'danger' : hrs >= 4 ? 'warn' : 'ok';
-  return { key: then, text, level };
+  const overdue = ms >= REQUEST_OVERDUE_MS;
+  const level   = overdue ? 'danger' : mins >= 30 ? 'warn' : 'ok';
+  return { key: then, text, level, overdue };
 }
 
 function monthKey(d) {
@@ -2511,6 +2548,19 @@ function renderRequests() {
   // to its DATE field for older records logged before this was tracked).
   const ageOf = r => timeAgo(r.firstSeenAt || (r.date ? r.date+'T00:00:00' : null));
 
+  // Warn banner: any PENDING request waiting 1+ hour, regardless of the
+  // current search/filter/bank selection, so it's never accidentally hidden.
+  const overdueCount = db.requests.filter(r => (r.status||'PENDING')==='PENDING' && ageOf(r).overdue).length;
+  const banner = document.getElementById('request-overdue-banner');
+  if (banner) {
+    if (overdueCount > 0) {
+      banner.style.display = '';
+      banner.textContent = `🚨 ${overdueCount} request${overdueCount!==1?'s have':' has'} been PENDING for over 1 hour — please action ${overdueCount!==1?'them':'it'} now.`;
+    } else {
+      banner.style.display = 'none';
+    }
+  }
+
   // Pending requests: oldest (most overdue) first, so they float to the top.
   // Handed-over requests: most recently completed first.
   const sorted = [...rows].sort((a, b) => {
@@ -2530,8 +2580,11 @@ function renderRequests() {
     const ic = handed ? '✅' : '⏳';
     const label = handed ? 'HANDED OVER' : 'PENDING';
     const age = ageOf(r);
-    return `<tr>
-      <td class="mono">${fmtDate(r.date)}${!handed ? `<div style="font-size:9px;font-weight:600;color:${levelColor[age.level]};margin-top:2px">⏱ ${age.text}</div>` : ''}</td>
+    const ageHtml = !handed
+      ? `<div style="font-size:9px;font-weight:${age.overdue?700:600};color:${levelColor[age.level]};margin-top:2px">⏱ ${age.text}</div>${age.overdue ? `<div style="font-size:9px;font-weight:700;color:var(--danger);margin-top:1px">🚨 Over 1hr!</div>` : ''}`
+      : '';
+    return `<tr${age.overdue && !handed ? ' style="background:rgba(239,68,68,0.06)"' : ''}>
+      <td class="mono">${fmtDate(r.date)}${ageHtml}</td>
       <td class="mono text-accent">${esc(r.tid||'—')}</td>
       <td class="mono text-dim">${esc(r.serial||'—')}</td>
       <td class="mono text-dim">${esc(r.model||'—')}</td>
