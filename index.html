@@ -23,7 +23,7 @@
 <!-- Firebase -->
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-  import { getFirestore, doc, getDoc, setDoc, onSnapshot, collection, deleteDoc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+  import { getFirestore, doc, getDoc, setDoc, updateDoc, onSnapshot, collection, deleteDoc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
   // ── PASTE YOUR FIREBASE CONFIG HERE ──────────────────────────
   const firebaseConfig = {
@@ -47,6 +47,23 @@
     } catch(e) {
       console.error("Firebase save error:", e);
       showToast("⚠️ Save failed: " + e.message, true);
+    }
+  };
+
+  // Partial update — only touches the specific fields passed in, so it can
+  // NEVER overwrite staff/dispatch/returns with stale/empty local data. Used
+  // by the background PARTS REQUEST sheet sync, which runs independently of
+  // (and shouldn't be able to clobber) the rest of the app's data.
+  window._fbSavePartial = async function(fields) {
+    try {
+      await updateDoc(DB_DOC, fields);
+    } catch(e) {
+      console.error("Firebase partial save error:", e);
+      // Fall back to a full save only if the doc doesn't exist yet at all
+      if (String(e.message||'').toLowerCase().includes('no document to update')) {
+        try { await setDoc(DB_DOC, fields, { merge: true }); }
+        catch(e2) { console.error("Firebase partial save fallback error:", e2); }
+      }
     }
   };
 
@@ -1145,7 +1162,9 @@ header {
       <button class="btn btn-pdf btn-sm" onclick="openPdfModal()">📄 Export PDF</button>
       <button class="btn btn-backup btn-sm" onclick="downloadBackup()" title="Save a backup file to your computer">💾 Backup</button>
       <button class="btn btn-view-backup btn-sm" onclick="triggerViewBackup()" title="Open and view a saved backup file">👁 View Backup</button>
+      <button class="btn btn-danger-outline btn-sm" onclick="triggerRestoreBackup()" title="Restore the live app from a saved backup file">⬆ Restore Backup</button>
       <input type="file" id="backup-file-input" accept="application/json,.json" style="display:none" onchange="handleViewBackupFile(event)">
+      <input type="file" id="restore-file-input" accept="application/json,.json" style="display:none" onchange="handleRestoreBackupFile(event)">
       <div class="date-badge" id="date-badge"></div>
     </div>
   </header>
@@ -1320,7 +1339,7 @@ header {
        BANK REQUESTS TAB
        ====================================================== -->
   <div id="tab-requests" class="view">
-    <div class="info-box">ℹ️ Requests entered by bank agents into the <strong>PARTS REQUEST</strong> Google Sheet appear here automatically (synced every ~45s).</span></div>
+    <div class="info-box">ℹ️ Requests entered by bank agents into the <strong>PARTS REQUEST</strong> Google Sheet appear here automatically (synced every ~45s). Mark each one <strong>Handed Over</strong> once the item is given out — this writes the status straight back to the sheet's AVAILABLE column. You can still log a one-off request manually with "+ New Request" if needed. <span style="color:var(--text-dim)">Note: deleting a synced row here only hides it locally — remove the row in the Sheet itself to delete it for good.</span></div>
     <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:20px;">
       <div class="kpi-card warn">
         <div class="kpi-label">Pending Requests</div>
@@ -1358,7 +1377,7 @@ header {
         <table class="data-table">
           <thead>
             <tr>
-              <th>Date</th><th>TID No.</th><th>Model / Serial</th><th>Merchant Name</th><th>Merchant Address</th>
+              <th>Date</th><th>TID No.</th><th>Serial No.</th><th>Model</th><th>Merchant Name</th><th>Merchant Address</th>
               <th>Bank Name</th><th>Item Type</th><th>Requested By</th><th>Status</th>
               <th>Entered By</th><th></th>
             </tr>
@@ -1505,7 +1524,7 @@ const ADMIN_PASSWORD = 'CBA2024';
 const PARTS_SHEET_ID  = '1u1Bl01xBA2VAq5J-zc9rYH1W60ZKR35n3ZUFiFbMZvI';
 const PARTS_SHEET_GID = '698981557'; // the "PARTS REQUEST" tab
 const PARTS_SHEET_READ_URL  = `https://docs.google.com/spreadsheets/d/${PARTS_SHEET_ID}/gviz/tq?tqx=out:json&gid=${PARTS_SHEET_GID}`;
-const PARTS_SHEET_WRITE_URL = 'https://script.google.com/macros/s/AKfycbxJHaS2YBzjYxf0dXTnTVpBHQlzq9zvZccBpUoi9Oi99c_B4Cdvd3wCw1HhkoVJW2fC/exec'; // e.g. https://script.google.com/macros/s/AKfycb.../exec
+const PARTS_SHEET_WRITE_URL = 'https://script.google.com/macros/s/AKfycbw861_uODKkfYR-VDtxOwtbcVARjU0mrrN92k1TZAsB9z--nC6TdJ_DhXi3MRwhPYLa/exec'; // e.g. https://script.google.com/macros/s/AKfycb.../exec
 const PARTS_SHEET_POLL_MS   = 45000; // how often to re-check the sheet for new/updated rows
 
 /* ============================================================
@@ -1562,7 +1581,7 @@ async function loadDb() {
    PARTS REQUEST SHEET SYNC
    Reads the "PARTS REQUEST" tab of the shared Google Sheet and
    merges it into db.requests. Sheet columns: NO | DATE | TID |
-   MODEL | BANK | CUSTOMER NAME | ADDRESS | ITEMS | AVAILABLE
+   SERIAL NUMBER | MODEL | BANK | CUSTOMER NAME | ADDRESS | ITEMS | AVAILABLE
    ============================================================ */
 window._sheetSyncInFlight = false;
 
@@ -1576,23 +1595,34 @@ async function fetchPartsRequestSheet() {
     const json = JSON.parse(text.substring(start, end + 1));
     const rows = (json.table && json.table.rows) || [];
     const get = (cells, i) => (cells[i] && cells[i].v != null) ? String(cells[i].v).trim() : '';
+    // Google's gviz endpoint returns date cells as a literal string like
+    // "Date(2026,6,7)" (month is 0-indexed) instead of a normal date —
+    // convert that into a plain yyyy-mm-dd string so fmtDate() works.
+    const getDate = (cells, i) => {
+      const raw = get(cells, i);
+      const m = raw.match(/^Date\((\d+),(\d+),(\d+)/);
+      if (!m) return raw;
+      const y = Number(m[1]), mo = Number(m[2]), da = Number(m[3]);
+      return `${y}-${String(mo + 1).padStart(2, '0')}-${String(da).padStart(2, '0')}`;
+    };
     const parsed = [];
     rows.forEach((row, i) => {
       const c = row.c || [];
       const tid = get(c, 2);
-      const merchant = get(c, 5);
+      const merchant = get(c, 6);
       if (!tid && !merchant) return; // skip blank trailing rows
       parsed.push({
         sheetRow: i + 2, // row 1 is the header
         no:       get(c, 0),
-        date:     get(c, 1),
+        date:     getDate(c, 1),
         tid:      tid,
-        model:    get(c, 3),
-        bank:     get(c, 4),
+        serial:   get(c, 3),
+        model:    get(c, 4),
+        bank:     get(c, 5),
         merchant: merchant,
-        address:  get(c, 6),
-        itemType: get(c, 7),
-        available: (get(c, 8) || 'PENDING').toUpperCase(),
+        address:  get(c, 7),
+        itemType: get(c, 8),
+        available: (get(c, 9) || 'PENDING').toUpperCase(),
       });
     });
     return parsed;
@@ -1613,6 +1643,7 @@ function mergeSheetRequestsIntoDb(sheetRows) {
         _sheetRow: sr.sheetRow,
         date:      sr.date,
         tid:       sr.tid,
+        serial:    sr.serial,
         model:     sr.model,
         merchant:  sr.merchant,
         address:   sr.address,
@@ -1627,6 +1658,7 @@ function mergeSheetRequestsIntoDb(sheetRows) {
     } else {
       // Keep basic fields fresh in case they were edited in the sheet
       if (existing.tid !== sr.tid)           { existing.tid = sr.tid; changed = true; }
+      if (existing.serial !== sr.serial)     { existing.serial = sr.serial; changed = true; }
       if (existing.model !== sr.model)       { existing.model = sr.model; changed = true; }
       if (existing.merchant !== sr.merchant) { existing.merchant = sr.merchant; changed = true; }
       if (existing.address !== sr.address)   { existing.address = sr.address; changed = true; }
@@ -1646,10 +1678,19 @@ function mergeSheetRequestsIntoDb(sheetRows) {
       }
     }
   });
-  if (changed) { renderOverview(); renderRequests(); saveDb(); }
+  if (changed) {
+    renderOverview(); renderRequests();
+    // Save ONLY the requests/nextId fields back to Firebase — never a full
+    // saveDb() here, so this background sync can't ever wipe out
+    // staff/dispatch/returns even if it runs before/around the initial load.
+    if (window._fbSavePartial) {
+      window._fbSavePartial({ requests: db.requests, nextId: db.nextId });
+    }
+  }
 }
 
 async function syncPartsRequestSheet() {
+  if (!window._dbReady) return; // don't touch db.requests until the real load has finished
   if (window._sheetSyncInFlight) return;
   window._sheetSyncInFlight = true;
   const rows = await fetchPartsRequestSheet();
@@ -1736,6 +1777,66 @@ function downloadBackup() {
 function triggerViewBackup() {
   document.getElementById('backup-file-input').value = '';
   document.getElementById('backup-file-input').click();
+}
+
+function triggerRestoreBackup() {
+  document.getElementById('restore-file-input').value = '';
+  document.getElementById('restore-file-input').click();
+}
+
+// Read the chosen backup file, validate it, then show a confirmation modal
+// before actually overwriting the live app + Firebase with it.
+function handleRestoreBackupFile(event) {
+  const file = event.target.files && event.target.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = () => {
+    let data;
+    try {
+      data = JSON.parse(reader.result);
+    } catch (e) {
+      showToast('⚠️ That file is not a valid backup (bad JSON)', true);
+      return;
+    }
+    if (!data || !Array.isArray(data.staff) || !Array.isArray(data.dispatch) || !Array.isArray(data.returns)) {
+      showToast('⚠️ That file is not a valid CBA Terminal Tracker backup', true);
+      return;
+    }
+    const when = data.exportedAt ? fmtDate(data.exportedAt) + ' ' + new Date(data.exportedAt).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}) : 'Unknown date';
+    document.getElementById('modal-title').innerHTML = '⚠️ Confirm Restore';
+    document.getElementById('modal-body').innerHTML = `
+      <div class="info-box" style="border-color:var(--danger);color:#fca5a5">
+        This will <strong>replace all current data</strong> in this app (and in Firebase, for every device) with the contents of:<br>
+        <strong>${esc(file.name)}</strong> &nbsp;·&nbsp; backed up ${esc(when)}<br><br>
+        <strong>${data.staff.length}</strong> staff · <strong>${data.dispatch.length}</strong> dispatch records ·
+        <strong>${data.returns.length}</strong> return records · <strong>${(data.requests||[]).length}</strong> requests<br><br>
+        This cannot be undone. Make sure this is really the file you want.
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-danger-solid" onclick="confirmRestoreBackup()">⬆ Restore This Backup</button>
+      </div>`;
+    window._pendingRestoreData = data;
+    document.getElementById('modal-overlay').classList.add('open');
+  };
+  reader.onerror = () => showToast('⚠️ Could not read that file', true);
+  reader.readAsText(file);
+}
+
+async function confirmRestoreBackup() {
+  const data = window._pendingRestoreData;
+  if (!data) return;
+  db.staff    = data.staff    || [];
+  db.dispatch = data.dispatch || [];
+  db.returns  = data.returns  || [];
+  db.requests = data.requests || [];
+  db.nextId   = data.nextId   || 1;
+  window._pendingRestoreData = null;
+  closeModal();
+  renderOverview(); renderDispatch(); renderRequests();
+  await saveDb();
+  showToast('✅ Backup restored — data pushed to Firebase');
 }
 
 // Read the chosen file, validate it, then display its contents (read-only — never touches live data).
@@ -2356,7 +2457,8 @@ function renderRequests() {
     return `<tr>
       <td class="mono">${fmtDate(r.date)}</td>
       <td class="mono text-accent">${esc(r.tid||'—')}</td>
-      <td class="mono text-dim">${esc(r.model||r.serial||'—')}</td>
+      <td class="mono text-dim">${esc(r.serial||'—')}</td>
+      <td class="mono text-dim">${esc(r.model||'—')}</td>
       <td class="text-blue" style="font-weight:600">${esc(r.merchant||'—')}</td>
       <td class="text-dim" style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.address||'')}">${esc(r.address||'—')}</td>
       <td>${esc(r.bank||'—')}</td>
@@ -2372,7 +2474,7 @@ function renderRequests() {
         <button class="row-del-btn" data-log="request" data-idx="${idx}" title="Delete record">🗑</button>
       </div></td>
     </tr>`;
-  }).join('') : `<tr><td colspan="11"><div class="empty-state"><div class="icon">📨</div><p>No bank agent requests logged yet.<br>Click "+ New Request" to log one from Zoom chat.</p></div></td></tr>`;
+  }).join('') : `<tr><td colspan="12"><div class="empty-state"><div class="icon">📨</div><p>No bank agent requests logged yet.<br>Click "+ New Request" to log one from Zoom chat.</p></div></td></tr>`;
 }
 
 async function toggleRequestStatus(idx) {
@@ -2903,6 +3005,10 @@ function openRequestModal(editIdx) {
         <input class="form-input" type="text" id="rq-serial" placeholder="Serial number" value="${r?esc(r.serial||''):''}">
       </div>
       <div class="form-group">
+        <label class="form-label">Model</label>
+        <input class="form-input" type="text" id="rq-model" placeholder="e.g. A910, PAX A80" value="${r?esc(r.model||''):''}">
+      </div>
+      <div class="form-group">
         <label class="form-label">Merchant Name *</label>
         <input class="form-input" type="text" id="rq-merchant" placeholder="e.g. ABC Store" value="${r?esc(r.merchant||''):''}">
       </div>
@@ -2952,6 +3058,7 @@ function saveRequest(editIdx) {
     agent:      g('rq-agent').trim(),
     tid,
     serial:     g('rq-serial').trim(),
+    model:      g('rq-model').trim(),
     merchant,
     address:    g('rq-address').trim(),
     itemType,
