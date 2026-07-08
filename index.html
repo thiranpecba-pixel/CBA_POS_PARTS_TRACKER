@@ -738,6 +738,59 @@ header {
 @keyframes toastIn { from{opacity:0;transform:translateY(12px) scale(0.95)} to{opacity:1;transform:translateY(0) scale(1)} }
 
 /* ============================================================
+   OVERDUE BANK REQUEST ALERT
+   Bottom-right floating card — same corner as the small status
+   toast above, but sits a bit higher so the two never overlap.
+   The outer wrapper has NO background and no pointer-events, so
+   it never blocks clicks on the rest of the page; only the card
+   itself is interactive. This makes it a non-blocking heads-up
+   rather than a disruptive modal that interrupts other work.
+   ============================================================ */
+.overdue-toast {
+  position: fixed; bottom: 27px; right: 4px;
+  z-index: 500; width: 340px; max-width: calc(100vw - 32px);
+  display: none; pointer-events: none;
+}
+.overdue-toast.show { display: block; animation: toastIn 0.3s cubic-bezier(0.34,1.56,0.64,1); }
+.overdue-toast-card {
+  pointer-events: auto;
+  background: var(--surface);
+  border: 1px solid rgba(239,68,68,0.45);
+  border-radius: 14px;
+  padding: 16px 18px;
+  box-shadow: var(--shadow-lg);
+}
+.overdue-toast-head {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 14px; font-weight: 700; color: var(--danger);
+  margin-bottom: 8px;
+}
+.overdue-toast-desc { font-size: 12px; color: var(--text-muted); line-height: 1.5; margin-bottom: 10px; }
+.overdue-toast-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+.overdue-toast-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  background: rgba(239,68,68,0.06); border: 1px solid rgba(239,68,68,0.2);
+  border-radius: 9px; padding: 8px 10px;
+}
+.overdue-toast-item-main { min-width: 0; }
+.overdue-toast-item-tid { font-family:'DM Mono',monospace; font-weight: 700; font-size: 12px; color: var(--text); }
+.overdue-toast-item-sub { font-size: 10px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.overdue-toast-item-age { font-size: 11px; font-weight: 700; color: var(--danger); white-space: nowrap; flex-shrink: 0; }
+.overdue-toast-more { font-size: 11px; color: var(--text-dim); text-align: center; margin: 0 0 12px; }
+.overdue-toast-actions { display: flex; gap: 8px; }
+.overdue-toast-btn {
+  flex: 1; border: 1px solid var(--border2); background: var(--surface2); color: var(--text);
+  border-radius: 9px; padding: 9px 12px; font-size: 12px; font-weight: 600;
+  cursor: pointer; font-family: 'Sora', sans-serif; transition: var(--transition);
+}
+.overdue-toast-btn:hover { background: var(--surface3); }
+.overdue-toast-btn-primary {
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  border: none; color: #04140f;
+}
+.overdue-toast-btn-primary:hover { filter: brightness(1.08); }
+
+/* ============================================================
    RESPONSIVE
    ============================================================ */
 @media (max-width: 900px) {
@@ -1509,6 +1562,11 @@ header {
 <!-- Toast -->
 <div class="toast" id="toast">✅ <span id="toast-msg"></span></div>
 
+<!-- Overdue bank-request alert: bottom-right, non-blocking. Shown regardless
+     of which tab is open — see renderOverdueToast() — so an overdue request
+     never gets missed, without a disruptive full-screen popup. -->
+<div class="overdue-toast" id="overdue-toast"></div>
+
 <!-- ============================================================
      JAVASCRIPT
      ============================================================ -->
@@ -1622,6 +1680,7 @@ async function loadDb() {
   renderOverview();
   renderDispatch();
   renderRequests();
+  renderOverdueToast();
   document.getElementById('loading-overlay').style.display = 'none';
 
   // Now that db.requests is loaded, start polling the PARTS REQUEST sheet
@@ -1629,8 +1688,11 @@ async function loadDb() {
   setInterval(syncPartsRequestSheet, PARTS_SHEET_POLL_MS);
 
   // Refresh the "time ago" labels on pending requests every minute, even
-  // when nothing new has synced from the sheet.
+  // when nothing new has synced from the sheet. The overdue alert refreshes
+  // unconditionally (it floats above every tab); the table itself only
+  // needs a repaint while it's actually the visible tab.
   setInterval(() => {
+    renderOverdueToast();
     const tab = document.getElementById('tab-requests');
     if (tab && tab.classList.contains('active')) renderRequests();
   }, 60000);
@@ -1674,7 +1736,17 @@ async function fetchPartsRequestSheet() {
       if (!m) return raw;
       const y=Number(m[1]), mo=Number(m[2]), da=Number(m[3]);
       const h=Number(m[4]||0), mi=Number(m[5]||0), se=Number(m[6]||0);
-      return new Date(y, mo, da, h, mi, se).toISOString();
+      // IMPORTANT: build this with Date.UTC(), not `new Date(y,mo,da,...)`.
+      // The plain constructor interprets those numbers as LOCAL time of
+      // whichever device's browser runs this code — so the exact same
+      // FIRST SEEN cell value would resolve to a different real instant
+      // (and therefore a different countdown / "Over 1hr!" state) on a
+      // phone set to a different timezone than a desktop, even though
+      // both are looking at the same sheet. Date.UTC() makes the parse
+      // depend only on the numbers themselves, so every device — and every
+      // browser locale/timezone — computes the exact same instant, and
+      // therefore the same countdown, from the same FIRST SEEN value.
+      return new Date(Date.UTC(y, mo, da, h, mi, se)).toISOString();
     };
     const parsed = [];
     rows.forEach((row, i) => {
@@ -2199,6 +2271,85 @@ function timeAgo(iso) {
   return { key: then, text, level, overdue };
 }
 
+// Age of a single bank request = time since it was first seen by this app
+// (falls back to its DATE field, anchored to UTC, for older records logged
+// before FIRST SEEN was tracked). Shared by the Bank Requests table and the
+// floating overdue alert below, so both always agree.
+function requestAgeOf(r) {
+  return timeAgo(r.firstSeenAt || (r.date ? r.date+'T00:00:00Z' : null));
+}
+
+function getOverdueRequests() {
+  return (db.requests || []).filter(r =>
+    (r.status || 'PENDING') === 'PENDING' && requestAgeOf(r).overdue
+  );
+}
+
+/* ============================================================
+   OVERDUE BANK REQUEST ALERT (floating, bottom-right)
+   Runs independently of which tab is open (see the polling
+   intervals in loadDb/syncPartsRequestSheet) so an overdue
+   request is never missed — but as a small dismissible corner
+   card, not a blocking modal, so it never interrupts other work.
+   Dismissing only snoozes the *current* overdue requests; a
+   newly-overdue request (or this same one, if it were ever
+   un-dismissed by going PENDING again) will still trigger a
+   fresh alert.
+   ============================================================ */
+window._dismissedOverdueIds = window._dismissedOverdueIds || new Set();
+
+function renderOverdueToast() {
+  const box = document.getElementById('overdue-toast');
+  if (!box || !window._dbReady) return;
+
+  const overdue = getOverdueRequests();
+  const liveIds = new Set(overdue.map(r => r.id));
+  // Forget dismissals for requests that are no longer overdue, so an old
+  // dismissal can never suppress a different, later overdue request.
+  window._dismissedOverdueIds.forEach(id => {
+    if (!liveIds.has(id)) window._dismissedOverdueIds.delete(id);
+  });
+
+  const visible = overdue.filter(r => !window._dismissedOverdueIds.has(r.id));
+  if (!visible.length) { box.classList.remove('show'); box.innerHTML = ''; return; }
+
+  const shown = visible.slice(0, 3);
+  const extra = visible.length - shown.length;
+  const itemsHtml = shown.map(r => `
+    <div class="overdue-toast-item">
+      <div class="overdue-toast-item-main">
+        <div class="overdue-toast-item-tid">${esc(r.bank||'—')} · ${esc(r.tid||'—')}</div>
+        <div class="overdue-toast-item-sub">${esc(r.merchant||'—')} — ${esc(r.itemType||'—')}</div>
+      </div>
+      <div class="overdue-toast-item-age">⏱ ${requestAgeOf(r).text}</div>
+    </div>`).join('');
+
+  box.innerHTML = `
+    <div class="overdue-toast-card">
+      <div class="overdue-toast-head">🚨 Bank Request${visible.length!==1?'s':''} Overdue</div>
+      <div class="overdue-toast-desc">${visible.length} request${visible.length!==1?'s have':' has'} been PENDING for over 1 hour — please action ${visible.length!==1?'them':'it'} now:</div>
+      <div class="overdue-toast-list">${itemsHtml}</div>
+      ${extra > 0 ? `<div class="overdue-toast-more">+ ${extra} more overdue</div>` : ''}
+      <div class="overdue-toast-actions">
+        <button class="overdue-toast-btn" onclick="dismissOverdueToast()">Dismiss</button>
+        <button class="overdue-toast-btn overdue-toast-btn-primary" onclick="goToOverdueRequests()">📋 View Bank Requests</button>
+      </div>
+    </div>`;
+  box.classList.add('show');
+}
+
+function dismissOverdueToast() {
+  getOverdueRequests().forEach(r => window._dismissedOverdueIds.add(r.id));
+  renderOverdueToast();
+}
+
+function goToOverdueRequests() {
+  const btn = document.querySelector('.tab-btn[onclick*="\'requests\'"]');
+  if (btn) switchTab('requests', btn);
+  const box = document.getElementById('overdue-toast');
+  if (box) { box.classList.remove('show'); box.innerHTML = ''; }
+}
+
 function monthKey(d) {
   if (!d) return '';
   const dt = new Date(d);
@@ -2639,7 +2790,11 @@ function renderRequests() {
 
   // Age of each row = time since it was first seen by this app (falls back
   // to its DATE field for older records logged before this was tracked).
-  const ageOf = r => timeAgo(r.firstSeenAt || (r.date ? r.date+'T00:00:00' : null));
+  // NOTE: the 'Z' suffix matters — it anchors the fallback (for legacy rows
+  // with no FIRST SEEN value yet) to UTC midnight instead of the viewing
+  // device's own local midnight, so this age also can't drift between
+  // devices in different timezones.
+  const ageOf = requestAgeOf;
 
   // Warn banner: any PENDING request waiting 1+ hour, regardless of the
   // current search/filter/bank selection, so it's never accidentally hidden.
@@ -2676,8 +2831,22 @@ function renderRequests() {
     const ageHtml = !handed
       ? `<div style="font-size:9px;font-weight:${age.overdue?700:600};color:${levelColor[age.level]};margin-top:2px">⏱ ${age.text}</div>${age.overdue ? `<div style="font-size:9px;font-weight:700;color:var(--danger);margin-top:1px">🚨 Over 1hr!</div>` : ''}`
       : '';
+    // The sheet's DATE column is typed by hand by the bank agent and can be
+    // blank, mistyped, or simply not the day the request actually landed —
+    // that's what was producing dates that didn't match the countdown right
+    // below them (e.g. a request logged "58m ago" showing a date a month
+    // away). firstSeenAt is the one value every terminal agrees on, so it's
+    // used as the primary date whenever available; the agent-typed date is
+    // kept as a small secondary line only when it disagrees, so mistakes are
+    // visible instead of silently shown as fact.
+    const seenDateStr = r.firstSeenAt ? fmtDate(r.firstSeenAt) : null;
+    const typedDateStr = fmtDate(r.date);
+    const primaryDate = seenDateStr || typedDateStr;
+    const showTypedNote = seenDateStr && r.date && seenDateStr !== typedDateStr;
+    const dateHtml = primaryDate
+      + (showTypedNote ? `<div style="font-size:9px;color:var(--text-dim);margin-top:1px" title="Date typed in the sheet by the agent">📝 ${typedDateStr}</div>` : '');
     return `<tr${age.overdue && !handed ? ' style="background:rgba(239,68,68,0.06)"' : ''}>
-      <td class="mono">${fmtDate(r.date)}${ageHtml}</td>
+      <td class="mono">${dateHtml}${ageHtml}</td>
       <td class="mono text-accent">${esc(r.tid||'—')}</td>
       <td class="mono text-dim">${esc(r.serial||'—')}</td>
       <td class="mono text-dim">${esc(r.model||'—')}</td>
@@ -2697,6 +2866,10 @@ function renderRequests() {
       </div></td>
     </tr>`;
   }).join('') : `<tr><td colspan="12"><div class="empty-state"><div class="icon">📨</div><p>No bank agent requests logged yet.</p></div></td></tr>`;
+
+  // Keep the floating overdue alert (visible from any tab) in sync with
+  // whatever just changed here — new sync, status toggle, edit, delete...
+  renderOverdueToast();
 }
 
 async function toggleRequestStatus(idx) {
