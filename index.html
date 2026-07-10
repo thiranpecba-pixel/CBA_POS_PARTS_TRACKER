@@ -1428,6 +1428,13 @@ header {
         <option value="PENDING" selected>⏳ Pending</option>
         <option value="HANDED_OVER">✅ Handed Over</option>
       </select>
+      <select class="filter-select" id="request-filter-partstatus" onchange="renderRequests()">
+        <option value="">All Part Statuses</option>
+        <option value="Estimation">🧮 Estimation</option>
+        <option value="Old part available">✅ Old part available</option>
+        <option value="Old part not available">❌ Old part not available</option>
+        <option value="__NONE__">— Not set</option>
+      </select>
       <button class="btn btn-primary btn-sm" onclick="openRequestModal()">＋ New Request</button>
       <button class="btn btn-danger-outline btn-sm" onclick="openClearModal('request')">🗑 Clear Log</button>
     </div>
@@ -1441,7 +1448,7 @@ header {
           <thead>
             <tr>
               <th>Date</th><th>TID No.</th><th>Serial No.</th><th>Model</th><th>Merchant Name</th><th>Merchant Address</th>
-              <th>Bank Name</th><th>Item Type</th><th>Requested By</th><th>Status</th>
+              <th>Bank Name</th><th>Item Type</th><th>Requested By</th><th>Status</th><th>Part Status</th>
               <th>Entered By</th><th></th>
             </tr>
           </thead>
@@ -1601,7 +1608,7 @@ const ADMIN_PASSWORD = 'CBA2024';
 const PARTS_SHEET_ID  = '1u1Bl01xBA2VAq5J-zc9rYH1W60ZKR35n3ZUFiFbMZvI';
 const PARTS_SHEET_GID = '698981557'; // the "PARTS REQUEST" tab
 const PARTS_SHEET_READ_URL  = `https://docs.google.com/spreadsheets/d/${PARTS_SHEET_ID}/gviz/tq?tqx=out:json&gid=${PARTS_SHEET_GID}`;
-const PARTS_SHEET_WRITE_URL = 'https://script.google.com/macros/s/AKfycbw861_uODKkfYR-VDtxOwtbcVARjU0mrrN92k1TZAsB9z--nC6TdJ_DhXi3MRwhPYLa/exec'; // e.g. https://script.google.com/macros/s/AKfycb.../exec
+const PARTS_SHEET_WRITE_URL = 'https://script.google.com/macros/s/AKfycbyRdoaDYmMvxWKhkEdAgVsOB8cGax_7tDPtxCP8b3C5QKAxPyYnJMDovoArDwhL70Sq/exec'; // e.g. https://script.google.com/macros/s/AKfycb.../exec
 const PARTS_SHEET_POLL_MS   = 45000; // how often to re-check the sheet for new/updated rows
 
 /* ============================================================
@@ -1701,8 +1708,16 @@ async function loadDb() {
 /* ============================================================
    PARTS REQUEST SHEET SYNC
    Reads the "PARTS REQUEST" tab of the shared Google Sheet and
-   merges it into db.requests. Sheet columns: NO | DATE | TID |
-   SERIAL NUMBER | MODEL | BANK | CUSTOMER NAME | ADDRESS | ITEMS | AVAILABLE
+   merges it into db.requests. Sheet columns (A-L): NO | DATE | TID |
+   SERIAL NUMBER | MODEL | BANK | CUSTOMER NAME | ADDRESS | ITEMS |
+   AVAILABLE | FIRST SEEN | STATUS
+
+   NOTE: an earlier edit here incorrectly "fixed" this mapping based on
+   a bad read of the live sheet — the Serial Number column does exist
+   (column D) and the original indices below were correct all along.
+   That mistake has been reverted. The only real change is the new
+   STATUS column, added at column L (index 11) since J (AVAILABLE) and
+   K (FIRST SEEN) were already spoken for.
    ============================================================ */
 window._sheetSyncInFlight = false;
 
@@ -1770,6 +1785,11 @@ async function fetchPartsRequestSheet() {
         // notices the row, so every terminal shows the exact same age for
         // it from then on. Blank until someone writes it.
         firstSeen: getDateTime(c, 10) || null,
+        // Column L — "STATUS": bank agent / tech picks one of Estimation,
+        // Old part available, Old part not available via a dropdown
+        // (data validation) in the sheet. Kept as the exact display text
+        // so it round-trips cleanly with the sheet's dropdown list.
+        partStatus: get(c, 11) || '',
       });
     });
     return parsed;
@@ -1804,6 +1824,7 @@ function mergeSheetRequestsIntoDb(sheetRows) {
         itemType:  sr.itemType,
         agent:     '',
         status:    status,
+        partStatus: sr.partStatus,
         enteredBy: 'PARTS REQUEST Sheet',
         source:    'sheet',
         firstSeenAt: firstSeenAt,
@@ -1820,6 +1841,13 @@ function mergeSheetRequestsIntoDb(sheetRows) {
       if (existing.address !== sr.address)   { existing.address = sr.address; changed = true; }
       if (existing.bank !== sr.bank)         { existing.bank = sr.bank; changed = true; }
       if (existing.itemType !== sr.itemType) { existing.itemType = sr.itemType; changed = true; }
+      // The sheet is authoritative for Part Status too, unless a write-back
+      // for this exact row is still in flight (avoid flip-flopping back to
+      // the old value before our own edit has propagated to the sheet).
+      if (existing.partStatus !== sr.partStatus && existing._sheetRow !== window._pendingPartStatusWriteRow) {
+        existing.partStatus = sr.partStatus;
+        changed = true;
+      }
       // The sheet's FIRST SEEN column is authoritative once it has a value —
       // adopt it so this terminal shows the exact same age as everyone else.
       if (sr.firstSeen && existing.firstSeenAt !== sr.firstSeen) {
@@ -1868,6 +1896,36 @@ async function syncPartsRequestSheet() {
   if (rows) mergeSheetRequestsIntoDb(rows);
 }
 
+// Reads the Apps Script Web App's response and confirms it actually
+// reports success. Without this, a fetch() that "succeeds" at the
+// network level (Apps Script reachable, returns HTTP 200) but whose
+// doPost logic errored, didn't recognize a field (e.g. an old script
+// that hasn't been redeployed with `partStatus` handling yet), or
+// silently no-op'd, would still look like a success to the caller —
+// which is exactly the kind of failure that was going undetected here.
+async function verifySheetWriteResponse(res) {
+  let raw = '';
+  try { raw = await res.text(); } catch (e) { /* ignore */ }
+  if (!res.ok) {
+    console.error('Sheet write-back HTTP error:', res.status, raw);
+    return { ok: false, raw };
+  }
+  try {
+    const json = JSON.parse(raw);
+    if (json && json.ok === false) {
+      console.error('Sheet write-back reported failure:', json.error || raw);
+      return { ok: false, raw };
+    }
+    return { ok: true, raw };
+  } catch (e) {
+    // Not JSON — e.g. an old/mismatched Apps Script, a login/HTML error
+    // page, or something else misconfigured. Treat as failure so it
+    // doesn't get silently reported as a success.
+    console.error('Sheet write-back returned an unexpected (non-JSON) response:', raw);
+    return { ok: false, raw };
+  }
+}
+
 // Writes the AVAILABLE column back to a specific row in the PARTS REQUEST
 // sheet via the Google Apps Script Web App (see APPS_SCRIPT_SETUP.md).
 async function pushStatusToSheet(sheetRow, newAvailable) {
@@ -1877,17 +1935,45 @@ async function pushStatusToSheet(sheetRow, newAvailable) {
   }
   window._pendingSheetWriteRow = sheetRow;
   try {
-    await fetch(PARTS_SHEET_WRITE_URL, {
+    const res = await fetch(PARTS_SHEET_WRITE_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // avoids a CORS preflight
       body: JSON.stringify({ row: sheetRow, available: newAvailable, gid: PARTS_SHEET_GID }),
     });
-    return true;
+    const result = await verifySheetWriteResponse(res);
+    return result.ok;
   } catch (e) {
     console.error('Failed to write status back to sheet:', e);
     return false;
   } finally {
     setTimeout(() => { window._pendingSheetWriteRow = null; }, PARTS_SHEET_POLL_MS + 5000);
+  }
+}
+
+// Writes the STATUS column (col L — Estimation / Old part available /
+// Old part not available) back to a specific row in the PARTS REQUEST
+// sheet via the same Apps Script Web App used for AVAILABLE.
+window._pendingPartStatusWriteRow = null;
+async function pushPartStatusToSheet(sheetRow, newPartStatus) {
+  if (!PARTS_SHEET_WRITE_URL || PARTS_SHEET_WRITE_URL.includes('PASTE_YOUR')) {
+    console.warn('PARTS_SHEET_WRITE_URL is not configured — skipping write-back to sheet.');
+    return false;
+  }
+  window._pendingPartStatusWriteRow = sheetRow;
+  try {
+    const res = await fetch(PARTS_SHEET_WRITE_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // avoids a CORS preflight
+      body: JSON.stringify({ row: sheetRow, partStatus: newPartStatus, gid: PARTS_SHEET_GID }),
+    });
+    const result = await verifySheetWriteResponse(res);
+    if (!result.ok) console.error('Part Status write-back was not confirmed by the Apps Script. Raw response:', result.raw);
+    return result.ok;
+  } catch (e) {
+    console.error('Failed to write part status back to sheet:', e);
+    return false;
+  } finally {
+    setTimeout(() => { window._pendingPartStatusWriteRow = null; }, PARTS_SHEET_POLL_MS + 5000);
   }
 }
 
@@ -1898,12 +1984,13 @@ async function pushStatusToSheet(sheetRow, newAvailable) {
 async function pushFirstSeenToSheet(sheetRow, iso) {
   if (!PARTS_SHEET_WRITE_URL || PARTS_SHEET_WRITE_URL.includes('PASTE_YOUR')) return false;
   try {
-    await fetch(PARTS_SHEET_WRITE_URL, {
+    const res = await fetch(PARTS_SHEET_WRITE_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: JSON.stringify({ row: sheetRow, firstSeen: iso, gid: PARTS_SHEET_GID }),
     });
-    return true;
+    const result = await verifySheetWriteResponse(res);
+    return result.ok;
   } catch (e) {
     console.error('Failed to write FIRST SEEN back to sheet:', e);
     return false;
@@ -2743,10 +2830,34 @@ function renderReturns() {
 /* ============================================================
    BANK AGENT REQUESTS
    ============================================================ */
+// Options for the Part Status dropdown. Values must match the sheet's
+// data validation list in column J exactly, so the write-back round-trips.
+const PART_STATUS_OPTIONS = ['Estimation', 'Old part available', 'Old part not available'];
+const PART_STATUS_STYLE = {
+  '':                        { bg: 'transparent',            color: 'var(--text-dim)', icon: '—' },
+  'Estimation':               { bg: 'rgba(245,158,11,0.14)',  color: '#f59e0b',        icon: '🧮' },
+  'Old part available':       { bg: 'rgba(16,185,129,0.14)',  color: '#10b981',        icon: '✅' },
+  'Old part not available':   { bg: 'rgba(239,68,68,0.14)',   color: '#ef4444',        icon: '❌' },
+};
+
+function partStatusSelectHtml(r, idx) {
+  const cur = r.partStatus || '';
+  const st = PART_STATUS_STYLE[cur] || PART_STATUS_STYLE[''];
+  const opts = ['<option value=""' + (cur===''?' selected':'') + '>— Not set —</option>']
+    .concat(PART_STATUS_OPTIONS.map(o =>
+      `<option value="${esc(o)}"${cur===o?' selected':''}>${esc(PART_STATUS_STYLE[o].icon)} ${esc(o)}</option>`
+    ));
+  return `<select class="filter-select" style="font-size:11px;padding:5px 8px;background:${st.bg};color:${st.color};border-color:${st.color}55;font-weight:600"
+      onchange="updatePartStatus(${idx}, this.value)" title="Part status">
+      ${opts.join('')}
+    </select>`;
+}
+
 function renderRequests() {
   const s  = document.getElementById('request-search').value.toLowerCase();
   const bf = document.getElementById('request-filter-bank').value;
   const sf = document.getElementById('request-filter-status').value;
+  const psf = document.getElementById('request-filter-partstatus').value;
 
   // Rebuild bank dropdown
   const bankSel = document.getElementById('request-filter-bank');
@@ -2758,6 +2869,7 @@ function renderRequests() {
     (!s  || [r.tid,r.model,r.serial,r.merchant,r.address,r.bank,r.itemType,r.agent,r.enteredBy].some(v=>String(v||'').toLowerCase().includes(s)))
     && (!bf || r.bank===bf)
     && (!sf || (r.status||'PENDING')===sf)
+    && (!psf || (psf==='__NONE__' ? !r.partStatus : r.partStatus===psf))
   );
 
   document.getElementById('request-count-badge').textContent = rows.length + ' RECORDS';
@@ -2859,13 +2971,14 @@ function renderRequests() {
         <button class="pill ${pc}" style="border:none;cursor:pointer" title="Click to toggle status" onclick="confirmRequestToggle(${idx},this)">${ic} ${label}</button>
         ${handed && r.handedOverDate ? `<div style="font-size:9px;color:var(--text-dim);margin-top:3px">by ${esc(r.handedOverBy||'—')} · ${fmtDate(r.handedOverDate)}</div>` : ''}
       </td>
+      <td>${partStatusSelectHtml(r, idx)}</td>
       <td class="text-dim">${esc(r.enteredBy||'—')}</td>
       <td><div style="display:flex;gap:4px;align-items:center">
         <button class="row-del-btn row-edit-btn" data-log="request" data-idx="${idx}" title="Edit record" onclick="openRequestModal(${idx});event.stopPropagation()">✏️</button>
         <button class="row-del-btn" data-log="request" data-idx="${idx}" title="Delete record">🗑</button>
       </div></td>
     </tr>`;
-  }).join('') : `<tr><td colspan="12"><div class="empty-state"><div class="icon">📨</div><p>No bank agent requests logged yet.</p></div></td></tr>`;
+  }).join('') : `<tr><td colspan="13"><div class="empty-state"><div class="icon">📨</div><p>No bank agent requests logged yet.</p></div></td></tr>`;
 
   // Keep the floating overdue alert (visible from any tab) in sync with
   // whatever just changed here — new sync, status toggle, edit, delete...
@@ -2900,6 +3013,34 @@ async function toggleRequestStatus(idx) {
     }
   } else {
     showToast(goingBackToPending ? '↩️ Marked back as PENDING' : '✅ Marked as HANDED OVER');
+  }
+}
+
+// Called when someone picks a new value from the Part Status dropdown
+// (Estimation / Old part available / Old part not available) on a Bank
+// Requests row. Updates locally first for a snappy UI, then writes back
+// to the PARTS REQUEST sheet; reverts locally if the write fails.
+async function updatePartStatus(idx, newPartStatus) {
+  const r = db.requests[idx];
+  if (!r) return;
+  const prev = r.partStatus;
+  if (prev === newPartStatus) return;
+  r.partStatus = newPartStatus;
+  renderRequests();
+  saveDb();
+
+  if (r._sheetRow) {
+    const ok = await pushPartStatusToSheet(r._sheetRow, newPartStatus);
+    if (ok) {
+      showToast('🔧 Part status set to "' + (newPartStatus || '—') + '" (sheet updated)');
+    } else {
+      r.partStatus = prev;
+      renderRequests();
+      saveDb();
+      showToast('⚠️ Failed to update sheet — change reverted', true);
+    }
+  } else {
+    showToast('🔧 Part status set to "' + (newPartStatus || '—') + '"');
   }
 }
 
@@ -3430,6 +3571,13 @@ function openRequestModal(editIdx) {
           ${r&&r.enteredBy&&!admins.includes(r.enteredBy)?`<option selected>${esc(r.enteredBy)}</option>`:''}
         </select>
       </div>
+      <div class="form-group">
+        <label class="form-label">Part Status</label>
+        <select class="form-select" id="rq-partstatus">
+          <option value=""${!r||!r.partStatus?' selected':''}>— Not set —</option>
+          ${PART_STATUS_OPTIONS.map(o=>`<option value="${esc(o)}"${r&&r.partStatus===o?' selected':''}>${esc(PART_STATUS_STYLE[o].icon)} ${esc(o)}</option>`).join('')}
+        </select>
+      </div>
       <div class="form-group full">
         <label class="form-label">Notes / Remarks</label>
         <input class="form-input" type="text" id="rq-notes" placeholder="Optional notes" value="${r?esc(r.notes||''):''}">
@@ -3465,7 +3613,9 @@ function saveRequest(editIdx) {
     itemType,
     notes:      g('rq-notes').trim(),
     enteredBy:  g('rq-enteredby'),
+    partStatus: g('rq-partstatus'),
   };
+  let sheetRowToPush = null, newPartStatus = null;
   if (editIdx == null) {
     data.status = 'PENDING';
     data.firstSeenAt = new Date().toISOString();
@@ -3473,10 +3623,18 @@ function saveRequest(editIdx) {
     closeModal(); showToast('✅ Request logged!');
   } else {
     const r = db.requests[editIdx];
-    if (r) Object.assign(r, data);
+    if (r) {
+      if (r._sheetRow && r.partStatus !== data.partStatus) {
+        sheetRowToPush = r._sheetRow; newPartStatus = data.partStatus;
+      }
+      Object.assign(r, data);
+    }
     closeModal(); showToast('✅ Request updated!');
   }
   renderRequests(); saveDb();
+  // If this row is linked to the PARTS REQUEST sheet and its Part Status
+  // changed here, write that change back to the sheet too.
+  if (sheetRowToPush) pushPartStatusToSheet(sheetRowToPush, newPartStatus);
 }
 
 function closeModal() { document.getElementById('modal-overlay').classList.remove('open'); }
