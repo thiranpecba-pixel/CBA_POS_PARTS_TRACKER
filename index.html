@@ -1436,6 +1436,8 @@ header {
         <option value="__NONE__">— Not set</option>
       </select>
       <button class="btn btn-primary btn-sm" onclick="openRequestModal()">＋ New Request</button>
+      <button class="btn btn-ghost btn-sm" id="request-refresh-btn" onclick="manualSyncPartsRequestSheet()" title="Re-check the Google Sheet right now">🔄 Refresh</button>
+      <span id="request-last-synced" style="font-size:11px;color:var(--text-dim);align-self:center;margin-left:2px"></span>
       <button class="btn btn-danger-outline btn-sm" onclick="openClearModal('request')">🗑 Clear Log</button>
     </div>
     <div class="card">
@@ -1608,8 +1610,8 @@ const ADMIN_PASSWORD = 'CBA2024';
 const PARTS_SHEET_ID  = '1u1Bl01xBA2VAq5J-zc9rYH1W60ZKR35n3ZUFiFbMZvI';
 const PARTS_SHEET_GID = '698981557'; // the "PARTS REQUEST" tab
 const PARTS_SHEET_READ_URL  = `https://docs.google.com/spreadsheets/d/${PARTS_SHEET_ID}/gviz/tq?tqx=out:json&gid=${PARTS_SHEET_GID}`;
-const PARTS_SHEET_WRITE_URL = 'https://script.google.com/macros/s/AKfycbyRdoaDYmMvxWKhkEdAgVsOB8cGax_7tDPtxCP8b3C5QKAxPyYnJMDovoArDwhL70Sq/exec'; // e.g. https://script.google.com/macros/s/AKfycb.../exec
-const PARTS_SHEET_POLL_MS   = 45000; // how often to re-check the sheet for new/updated rows
+const PARTS_SHEET_WRITE_URL = 'https://script.google.com/macros/s/AKfycbw861_uODKkfYR-VDtxOwtbcVARjU0mrrN92k1TZAsB9z--nC6TdJ_DhXi3MRwhPYLa/exec'; // e.g. https://script.google.com/macros/s/AKfycb.../exec
+const PARTS_SHEET_POLL_MS   = 15000; // how often to re-check the sheet for new/updated rows
 
 /* ============================================================
    DATABASE — backed by Firebase Firestore
@@ -1693,6 +1695,24 @@ async function loadDb() {
   // Now that db.requests is loaded, start polling the PARTS REQUEST sheet
   syncPartsRequestSheet();
   setInterval(syncPartsRequestSheet, PARTS_SHEET_POLL_MS);
+
+  // Also sync the moment this tab/window regains focus — e.g. someone
+  // edited the sheet directly in another tab, then switched back here.
+  // Without this they'd otherwise have to wait for the next poll tick.
+  // Throttled to at most once every 5s so rapid focus toggling can't
+  // hammer the sheet.
+  window._lastFocusSync = Date.now();
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    if (Date.now() - window._lastFocusSync < 5000) return;
+    window._lastFocusSync = Date.now();
+    syncPartsRequestSheet();
+  });
+  window.addEventListener('focus', () => {
+    if (Date.now() - window._lastFocusSync < 5000) return;
+    window._lastFocusSync = Date.now();
+    syncPartsRequestSheet();
+  });
 
   // Refresh the "time ago" labels on pending requests every minute, even
   // when nothing new has synced from the sheet. The overdue alert refreshes
@@ -1893,8 +1913,37 @@ async function syncPartsRequestSheet() {
   window._sheetSyncInFlight = true;
   const rows = await fetchPartsRequestSheet();
   window._sheetSyncInFlight = false;
+  window._lastSyncAt = Date.now();
+  window._lastSyncOk = rows != null;
+  updateLastSyncedLabel();
   if (rows) mergeSheetRequestsIntoDb(rows);
 }
+
+// Manual "🔄 Refresh" button on the Bank Requests tab — forces an
+// immediate re-check of the sheet instead of waiting for the next poll,
+// with a spinning/disabled state and a toast so it's obvious it did
+// something (useful right after editing the sheet directly).
+async function manualSyncPartsRequestSheet() {
+  const btn = document.getElementById('request-refresh-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '🔄 Refreshing…'; }
+  await syncPartsRequestSheet();
+  if (btn) { btn.disabled = false; btn.textContent = '🔄 Refresh'; }
+  showToast(window._lastSyncOk ? '🔄 Synced with PARTS REQUEST sheet' : '⚠️ Could not reach the sheet — check your connection', !window._lastSyncOk);
+}
+
+// Keeps the small "last synced Xs ago" label in the Bank Requests action
+// bar up to date. Called right after every sync, and on a light interval
+// so the "Xs ago" text keeps counting up between syncs too.
+function updateLastSyncedLabel() {
+  const el = document.getElementById('request-last-synced');
+  if (!el) return;
+  if (!window._lastSyncAt) { el.textContent = ''; return; }
+  const secs = Math.round((Date.now() - window._lastSyncAt) / 1000);
+  const ago = secs < 5 ? 'just now' : secs < 60 ? `${secs}s ago` : `${Math.round(secs/60)}m ago`;
+  el.textContent = (window._lastSyncOk ? '✅ Synced ' : '⚠️ Sync failed ') + ago;
+  el.style.color = window._lastSyncOk ? 'var(--text-dim)' : 'var(--danger)';
+}
+setInterval(updateLastSyncedLabel, 5000);
 
 // Reads the Apps Script Web App's response and confirms it actually
 // reports success. Without this, a fetch() that "succeeds" at the
@@ -2484,7 +2533,7 @@ function switchTab(tab, btn) {
   btn.classList.add('active');
   if (tab === 'dispatch')    renderDispatch();
   else if (tab === 'returns')    renderReturns();
-  else if (tab === 'requests')    renderRequests();
+  else if (tab === 'requests')    { renderRequests(); syncPartsRequestSheet(); }
   else if (tab === 'outstanding') renderOutstanding();
   else if (tab === 'staff')       renderStaff();
   else if (tab === 'overview')    renderOverview();
