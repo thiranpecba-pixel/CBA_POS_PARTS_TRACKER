@@ -401,6 +401,43 @@ header {
 .data-table tr:hover td { background: var(--table-hover); }
 .data-table tbody tr { transition: background 0.15s; }
 
+/* Sticky Actions column — these tables run wide (12-14 columns) and
+   overflow horizontally on smaller screens; keeping the last column
+   (edit/delete buttons) pinned to the right means it's always reachable
+   even before the person has scrolled all the way over. */
+.data-table th:last-child, .data-table td:last-child:not([colspan]) {
+  position: sticky; right: 0; background: var(--surface);
+  box-shadow: -8px 0 8px -8px rgba(0,0,0,0.45);
+}
+.data-table thead th:last-child { z-index: 2; background: var(--surface2); }
+
+/* ============================================================
+   TABLE SCROLL WRAPPER
+   Native horizontal scrollbars are invisible-by-default on touch
+   devices (they only flash briefly while actively dragging), so on a
+   phone/tablet there was no visual cue that a wide table could be
+   scrolled sideways at all. This wrapper makes the scrollbar itself
+   fatter/colored wherever the browser supports styling it, and adds a
+   small persistent "⇆ scroll" hint that only appears when the table is
+   actually wider than its container.
+   ============================================================ */
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: var(--accent2) var(--surface2);
+}
+.table-scroll::-webkit-scrollbar { height: 10px; }
+.table-scroll::-webkit-scrollbar-track { background: var(--surface2); border-radius: 6px; }
+.table-scroll::-webkit-scrollbar-thumb { background: var(--accent2); border-radius: 6px; }
+.table-scroll::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+.table-scroll-hint {
+  display: none; align-items: center; gap: 6px; justify-content: flex-end;
+  font-family: 'DM Mono', monospace; font-size: 10px; font-weight: 600;
+  color: var(--accent2); padding: 6px 12px 0; letter-spacing: 0.3px;
+}
+.table-scroll-hint.show { display: flex; }
+
 /* Monthly group rows */
 .month-header-row td {
   background: var(--month-row) !important;
@@ -1344,7 +1381,8 @@ header {
         <div class="card-title">📤 Dispatch Log</div>
         <span class="card-badge badge-blue" id="dispatch-count-badge">0 RECORDS</span>
       </div>
-      <div style="overflow-x:auto">
+      <div class="table-scroll-hint" id="dispatch-scroll-hint">⇆ Scroll to see all columns</div>
+      <div class="table-scroll" id="dispatch-scroll-wrap">
         <table class="data-table">
           <thead>
             <tr>
@@ -1375,7 +1413,8 @@ header {
         <div class="card-title">📥 Return Log</div>
         <span class="card-badge badge-success" id="return-count-badge">0 RECORDS</span>
       </div>
-      <div style="overflow-x:auto">
+      <div class="table-scroll-hint" id="return-scroll-hint">⇆ Scroll to see all columns</div>
+      <div class="table-scroll" id="return-scroll-wrap">
         <table class="data-table">
           <thead>
             <tr>
@@ -1450,7 +1489,8 @@ header {
         <div class="card-title">📨 Bank Agent Requests</div>
         <span class="card-badge badge-blue" id="request-count-badge">0 RECORDS</span>
       </div>
-      <div style="overflow-x:auto">
+      <div class="table-scroll-hint" id="request-scroll-hint">⇆ Scroll to see all columns</div>
+      <div class="table-scroll" id="request-scroll-wrap">
         <table class="data-table">
           <thead>
             <tr>
@@ -1496,7 +1536,8 @@ header {
         <div class="card-title">👥 Staff List</div>
         <span class="card-badge badge-blue" id="staff-count-badge">0 MEMBERS</span>
       </div>
-      <div style="overflow-x:auto">
+      <div class="table-scroll-hint" id="staff-scroll-hint">⇆ Scroll to see all columns</div>
+      <div class="table-scroll" id="staff-scroll-wrap">
         <table class="data-table">
           <thead>
             <tr><th>#</th><th>Name</th><th>Role</th><th>Area / Region</th><th>Contact</th><th>Email</th><th>Status</th><th>Actions</th></tr>
@@ -2427,6 +2468,27 @@ function getColor(name, i) {
 /* ============================================================
    HELPERS
    ============================================================ */
+// Shows/hides the "⇆ Scroll to see all columns" hint above a wide table,
+// based on whether it's actually overflowing its container right now.
+// Hides itself once scrolled close to the right edge (nothing more to see),
+// and re-checks on scroll/resize. Safe to call every time a table re-renders.
+function refreshScrollHint(wrapId, hintId) {
+  const wrap = document.getElementById(wrapId);
+  const hint = document.getElementById(hintId);
+  if (!wrap || !hint) return;
+  const update = () => {
+    const scrollable = wrap.scrollWidth > wrap.clientWidth + 4;
+    const atEnd = wrap.scrollLeft + wrap.clientWidth >= wrap.scrollWidth - 4;
+    hint.classList.toggle('show', scrollable && !atEnd);
+  };
+  update();
+  if (!wrap._scrollHintBound) {
+    wrap.addEventListener('scroll', update);
+    window.addEventListener('resize', update);
+    wrap._scrollHintBound = true;
+  }
+}
+
 // Loose item-type match: trimmed, case-insensitive. If either side is
 // blank (older records that predate consistent item-type entry), falls
 // back to treating it as a match so legacy single-item-per-TID data keeps
@@ -2906,11 +2968,8 @@ function renderDispatch() {
         <button class="row-del-btn" data-log="dispatch" data-idx="${idx}" title="Delete record">🗑</button>
       </div></td>`;
   });
+  refreshScrollHint('dispatch-scroll-wrap', 'dispatch-scroll-hint');
 }
-
-/* ============================================================
-   RETURN LOG
-   ============================================================ */
 function renderReturns() {
   const s  = document.getElementById('return-search').value.toLowerCase();
   const tf = document.getElementById('return-filter-tech').value;
@@ -2949,9 +3008,9 @@ function renderReturns() {
       <td class="text-dim">${esc(r.enteredBy||'—')}</td>
       <td><div style="display:flex;gap:4px;align-items:center">
         <button class="row-del-btn row-edit-btn" data-log="return" data-idx="${idx}" title="Edit record" onclick="openEditModal('return',${idx});event.stopPropagation()">✏️</button>
-        <button class="row-del-btn" data-log="return" data-idx="${idx}" title="Delete record">🗑</button>
       </div></td>`;
   });
+  refreshScrollHint('return-scroll-wrap', 'return-scroll-hint');
 }
 
 /* ============================================================
@@ -3142,6 +3201,7 @@ function renderRequests() {
   // Keep the floating overdue alert (visible from any tab) in sync with
   // whatever just changed here — new sync, status toggle, edit, delete...
   renderOverdueToast();
+  refreshScrollHint('request-scroll-wrap', 'request-scroll-hint');
 }
 
 // When a Bank Request is marked HANDED OVER — from this app's toggle button
@@ -3391,6 +3451,7 @@ function renderStaff() {
       </div></td>
     </tr>`;
   }).join('') || '<tr><td colspan="8"><div class="empty-state"><div class="icon">👤</div><p>No staff found.<br>Click "+ Add Staff" to add your first team member.</p></div></td></tr>';
+  refreshScrollHint('staff-scroll-wrap', 'staff-scroll-hint');
 }
 
 function toggleActive(id) {
