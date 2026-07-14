@@ -3121,7 +3121,7 @@ function renderOutstanding() {
 
     const serialsHtml = out.length
       ? `<div class="tech-serials">
-          ${out.slice(0,5).map(d=>`<div class="tech-serial-item"><div class="tech-serial-dot" style="background:${col}"></div>${esc(d.tid||d.serial)} — <span style="color:var(--text-dim)">${esc(d.itemType)}</span></div>`).join('')}
+          ${out.slice(0,5).map(d=>`<div class="tech-serial-item"><div class="tech-serial-dot" style="background:${col}"></div>${esc(d.tid||d.serial)} — <span style="color:var(--text-dim)">${esc(d.itemType)}${d.desc ? ' · '+esc(d.desc) : ''}</span></div>`).join('')}
           ${out.length>5 ? `<div style="font-size:10px;color:var(--text-dim);margin-top:4px">+${out.length-5} more…</div>` : ''}
         </div>` : '';
 
