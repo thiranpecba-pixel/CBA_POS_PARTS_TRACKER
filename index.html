@@ -1435,7 +1435,12 @@ header {
         <option value="Old part not available">❌ Old part not available</option>
         <option value="__NONE__">— Not set</option>
       </select>
+      <select class="filter-select" id="request-filter-tech" onchange="renderRequests()">
+        <option value="">All Technicians</option>
+        <option value="__NONE__">— Unassigned</option>
+      </select>
       <button class="btn btn-primary btn-sm" onclick="openRequestModal()">＋ New Request</button>
+      <button class="btn btn-ghost btn-sm" onclick="backfillDispatchFromHandedOverRequests()" title="Add any already-Handed-Over requests that are missing from the Dispatch Log">📤 Backfill Dispatch Log</button>
       <button class="btn btn-ghost btn-sm" id="request-refresh-btn" onclick="manualSyncPartsRequestSheet()" title="Re-check the Google Sheet right now">🔄 Refresh</button>
       <span id="request-last-synced" style="font-size:11px;color:var(--text-dim);align-self:center;margin-left:2px"></span>
       <button class="btn btn-danger-outline btn-sm" onclick="openClearModal('request')">🗑 Clear Log</button>
@@ -1450,7 +1455,7 @@ header {
           <thead>
             <tr>
               <th>Date</th><th>TID No.</th><th>Serial No.</th><th>Model</th><th>Merchant Name</th><th>Merchant Address</th>
-              <th>Bank Name</th><th>Item Type</th><th>Requested By</th><th>Status</th><th>Part Status</th>
+              <th>Bank Name</th><th>Item Type</th><th>Requested By</th><th>Status</th><th>Part Status</th><th>Technician</th>
               <th>Entered By</th><th></th>
             </tr>
           </thead>
@@ -1728,16 +1733,19 @@ async function loadDb() {
 /* ============================================================
    PARTS REQUEST SHEET SYNC
    Reads the "PARTS REQUEST" tab of the shared Google Sheet and
-   merges it into db.requests. Sheet columns (A-L): NO | DATE | TID |
+   merges it into db.requests. Sheet columns (A-M): NO | DATE | TID |
    SERIAL NUMBER | MODEL | BANK | CUSTOMER NAME | ADDRESS | ITEMS |
-   AVAILABLE | FIRST SEEN | STATUS
+   AVAILABLE | FIRST SEEN | STATUS | TECHNICIAN
 
    NOTE: an earlier edit here incorrectly "fixed" this mapping based on
    a bad read of the live sheet — the Serial Number column does exist
    (column D) and the original indices below were correct all along.
-   That mistake has been reverted. The only real change is the new
-   STATUS column, added at column L (index 11) since J (AVAILABLE) and
-   K (FIRST SEEN) were already spoken for.
+   That mistake has been reverted. The STATUS column was added at
+   column L (index 11) since J (AVAILABLE) and K (FIRST SEEN) were
+   already spoken for. TECHNICIAN was added after that at column M
+   (index 12) — the technician assigned to handle the request. It's
+   editable from either the sheet or this app; both directions sync,
+   the same way Part Status already does.
    ============================================================ */
 window._sheetSyncInFlight = false;
 
@@ -1810,6 +1818,10 @@ async function fetchPartsRequestSheet() {
         // (data validation) in the sheet. Kept as the exact display text
         // so it round-trips cleanly with the sheet's dropdown list.
         partStatus: get(c, 11) || '',
+        // Column M — "TECHNICIAN": the technician assigned to this
+        // request. Can be set from the sheet directly or from this app's
+        // Requests tab — either way it round-trips to the same column.
+        technician: get(c, 12) || '',
       });
     });
     return parsed;
@@ -1845,6 +1857,7 @@ function mergeSheetRequestsIntoDb(sheetRows) {
         agent:     '',
         status:    status,
         partStatus: sr.partStatus,
+        technician: sr.technician,
         enteredBy: 'PARTS REQUEST Sheet',
         source:    'sheet',
         firstSeenAt: firstSeenAt,
@@ -1852,6 +1865,10 @@ function mergeSheetRequestsIntoDb(sheetRows) {
       });
       changed = true;
       if (!sr.firstSeen) pushFirstSeenToSheet(sr.sheetRow, firstSeenAt);
+      // First time we've ever seen this row, and it's already marked
+      // COMPLETE in the sheet (e.g. handled before this app started
+      // tracking it) — still needs a Dispatch Log entry.
+      if (status === 'HANDED_OVER') autoCreateDispatchFromRequest(db.requests[db.requests.length - 1]);
     } else {
       // Keep basic fields fresh in case they were edited in the sheet
       if (existing.tid !== sr.tid)           { existing.tid = sr.tid; changed = true; }
@@ -1866,6 +1883,11 @@ function mergeSheetRequestsIntoDb(sheetRows) {
       // the old value before our own edit has propagated to the sheet).
       if (existing.partStatus !== sr.partStatus && existing._sheetRow !== window._pendingPartStatusWriteRow) {
         existing.partStatus = sr.partStatus;
+        changed = true;
+      }
+      // Same authoritative-unless-in-flight rule for the TECHNICIAN column.
+      if (existing.technician !== sr.technician && existing._sheetRow !== window._pendingTechnicianWriteRow) {
+        existing.technician = sr.technician;
         changed = true;
       }
       // The sheet's FIRST SEEN column is authoritative once it has a value —
@@ -1888,6 +1910,9 @@ function mergeSheetRequestsIntoDb(sheetRows) {
         if (status === 'HANDED_OVER' && !existing.handedOverDate) {
           existing.handedOverDate = new Date().toISOString().split('T')[0];
           existing.handedOverBy = existing.handedOverBy || 'PARTS REQUEST Sheet';
+          // Someone marked this COMPLETE directly in the sheet (not via this
+          // app's toggle button) — still needs a Dispatch Log entry.
+          autoCreateDispatchFromRequest(existing);
         }
         if (status === 'PENDING') { delete existing.handedOverDate; delete existing.handedOverBy; }
         changed = true;
@@ -1902,7 +1927,12 @@ function mergeSheetRequestsIntoDb(sheetRows) {
     // also used for staff IDs), but the requests array itself stays local,
     // repopulated from the sheet on every poll/reload.
     if (window._fbSavePartial) {
-      window._fbSavePartial({ nextId: db.nextId });
+      const fields = { nextId: db.nextId };
+      // A handed-over request auto-created a Dispatch Log row above —
+      // push the updated dispatch array too, so every other terminal
+      // (and a refresh of this one) sees the new dispatch entry.
+      if (window._autoDispatchDirty) { fields.dispatch = db.dispatch; window._autoDispatchDirty = false; }
+      window._fbSavePartial(fields);
     }
   }
 }
@@ -2023,6 +2053,33 @@ async function pushPartStatusToSheet(sheetRow, newPartStatus) {
     return false;
   } finally {
     setTimeout(() => { window._pendingPartStatusWriteRow = null; }, PARTS_SHEET_POLL_MS + 5000);
+  }
+}
+
+// Writes the TECHNICIAN column (col M) back to a specific row in the
+// PARTS REQUEST sheet via the same Apps Script Web App used for AVAILABLE
+// and Part Status.
+window._pendingTechnicianWriteRow = null;
+async function pushTechnicianToSheet(sheetRow, newTechnician) {
+  if (!PARTS_SHEET_WRITE_URL || PARTS_SHEET_WRITE_URL.includes('PASTE_YOUR')) {
+    console.warn('PARTS_SHEET_WRITE_URL is not configured — skipping write-back to sheet.');
+    return false;
+  }
+  window._pendingTechnicianWriteRow = sheetRow;
+  try {
+    const res = await fetch(PARTS_SHEET_WRITE_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // avoids a CORS preflight
+      body: JSON.stringify({ row: sheetRow, technician: newTechnician, gid: PARTS_SHEET_GID }),
+    });
+    const result = await verifySheetWriteResponse(res);
+    if (!result.ok) console.error('Technician write-back was not confirmed by the Apps Script. Raw response:', result.raw);
+    return result.ok;
+  } catch (e) {
+    console.error('Failed to write technician back to sheet:', e);
+    return false;
+  } finally {
+    setTimeout(() => { window._pendingTechnicianWriteRow = null; }, PARTS_SHEET_POLL_MS + 5000);
   }
 }
 
@@ -2370,8 +2427,29 @@ function getColor(name, i) {
 /* ============================================================
    HELPERS
    ============================================================ */
+// Loose item-type match: trimmed, case-insensitive. If either side is
+// blank (older records that predate consistent item-type entry), falls
+// back to treating it as a match so legacy single-item-per-TID data keeps
+// behaving exactly as before.
+function sameItemType(a, b) {
+  const na = (a||'').trim().toLowerCase();
+  const nb = (b||'').trim().toLowerCase();
+  if (!na || !nb) return true;
+  return na === nb;
+}
+
 function getStatus(item) {
-  if (db.returns.find(r => (item.tid && r.tid === item.tid) || (item.serial && r.serial === item.serial))) return 'RETURNED';
+  // A TID can have several different items dispatched against it (terminal,
+  // battery, cable, etc.), each returned separately — so a return record
+  // must match on serial, OR on TID **and** item type, to count as this
+  // specific item coming back. Matching on TID alone would incorrectly mark
+  // every sibling item under that TID as returned the moment any one of
+  // them was.
+  const returned = db.returns.some(r =>
+    (item.serial && r.serial === item.serial) ||
+    (item.tid && r.tid === item.tid && sameItemType(r.itemType, item.itemType))
+  );
+  if (returned) return 'RETURNED';
   const t = new Date(); t.setHours(0,0,0,0);
   if (!item.dueDate) return 'PENDING';
   return new Date(item.dueDate) < t ? 'OVERDUE' : 'PENDING';
@@ -2902,11 +2980,31 @@ function partStatusSelectHtml(r, idx) {
     </select>`;
 }
 
+// Builds the inline Technician dropdown for a Bank Agent Requests row.
+// Options come from active staff with role TECHNICIAN; if the current
+// value doesn't match any active technician (e.g. set by hand in the
+// sheet, or the tech was later deactivated), it's kept as an extra
+// option so the dropdown never silently drops what's actually stored.
+function technicianSelectHtml(r, idx) {
+  const cur = r.technician || '';
+  const techs = db.staff.filter(s => s.role === 'TECHNICIAN' && s.active === 'YES').map(s => s.name);
+  const opts = ['<option value=""' + (cur === '' ? ' selected' : '') + '>— Unassigned —</option>']
+    .concat(techs.map(t => `<option value="${esc(t)}"${cur === t ? ' selected' : ''}>${esc(t)}</option>`));
+  if (cur && !techs.includes(cur)) {
+    opts.push(`<option value="${esc(cur)}" selected>${esc(cur)}</option>`);
+  }
+  return `<select class="filter-select" style="font-size:11px;padding:5px 8px"
+      onchange="updateTechnician(${idx}, this.value)" title="Assigned technician">
+      ${opts.join('')}
+    </select>`;
+}
+
 function renderRequests() {
   const s  = document.getElementById('request-search').value.toLowerCase();
   const bf = document.getElementById('request-filter-bank').value;
   const sf = document.getElementById('request-filter-status').value;
   const psf = document.getElementById('request-filter-partstatus').value;
+  const tf  = document.getElementById('request-filter-tech').value;
 
   // Rebuild bank dropdown
   const bankSel = document.getElementById('request-filter-bank');
@@ -2914,11 +3012,22 @@ function renderRequests() {
   const allBanks = [...new Set(db.requests.map(r=>r.bank))].filter(Boolean).sort();
   bankSel.innerHTML = '<option value="">All Banks</option>' + allBanks.map(b=>`<option value="${esc(b)}"${b===curBank?' selected':''}>${esc(b)}</option>`).join('');
 
+  // Rebuild technician dropdown — from active staff plus any technician
+  // name already present on a request (in case it was set by hand in the
+  // sheet, or the staff member was later deactivated/removed).
+  const techFilterSel = document.getElementById('request-filter-tech');
+  const curTechFilter = techFilterSel.value;
+  const activeTechs = db.staff.filter(s=>s.role==='TECHNICIAN'&&s.active==='YES').map(s=>s.name);
+  const allReqTechs = [...new Set([...activeTechs, ...db.requests.map(r=>r.technician)])].filter(Boolean).sort();
+  techFilterSel.innerHTML = '<option value="">All Technicians</option><option value="__NONE__">— Unassigned</option>'
+    + allReqTechs.map(t=>`<option value="${esc(t)}"${t===curTechFilter?' selected':''}>${esc(t)}</option>`).join('');
+
   const rows = db.requests.filter(r =>
-    (!s  || [r.tid,r.model,r.serial,r.merchant,r.address,r.bank,r.itemType,r.agent,r.enteredBy].some(v=>String(v||'').toLowerCase().includes(s)))
+    (!s  || [r.tid,r.model,r.serial,r.merchant,r.address,r.bank,r.itemType,r.agent,r.enteredBy,r.technician].some(v=>String(v||'').toLowerCase().includes(s)))
     && (!bf || r.bank===bf)
     && (!sf || (r.status||'PENDING')===sf)
     && (!psf || (psf==='__NONE__' ? !r.partStatus : r.partStatus===psf))
+    && (!tf || (tf==='__NONE__' ? !r.technician : r.technician===tf))
   );
 
   document.getElementById('request-count-badge').textContent = rows.length + ' RECORDS';
@@ -3021,17 +3130,90 @@ function renderRequests() {
         ${handed && r.handedOverDate ? `<div style="font-size:9px;color:var(--text-dim);margin-top:3px">by ${esc(r.handedOverBy||'—')} · ${fmtDate(r.handedOverDate)}</div>` : ''}
       </td>
       <td>${partStatusSelectHtml(r, idx)}</td>
+      <td>${technicianSelectHtml(r, idx)}</td>
       <td class="text-dim">${esc(r.enteredBy||'—')}</td>
       <td><div style="display:flex;gap:4px;align-items:center">
         <button class="row-del-btn row-edit-btn" data-log="request" data-idx="${idx}" title="Edit record" onclick="openRequestModal(${idx});event.stopPropagation()">✏️</button>
         <button class="row-del-btn" data-log="request" data-idx="${idx}" title="Delete record">🗑</button>
       </div></td>
     </tr>`;
-  }).join('') : `<tr><td colspan="13"><div class="empty-state"><div class="icon">📨</div><p>No bank agent requests logged yet.</p></div></td></tr>`;
+  }).join('') : `<tr><td colspan="14"><div class="empty-state"><div class="icon">📨</div><p>No bank agent requests logged yet.</p></div></td></tr>`;
 
   // Keep the floating overdue alert (visible from any tab) in sync with
   // whatever just changed here — new sync, status toggle, edit, delete...
   renderOverdueToast();
+}
+
+// When a Bank Request is marked HANDED OVER — from this app's toggle button
+// OR because the PARTS REQUEST sheet already shows AVAILABLE=COMPLETE on
+// sync — the item has physically gone out to a technician, so it needs to
+// exist in the Dispatch Log too. This creates that dispatch entry
+// automatically instead of requiring someone to re-type it by hand.
+//
+// De-duplication: skipped if a dispatch record already exists for the same
+// TID (or same serial when there's no TID) — same rule saveDispatch() uses
+// — so toggling a request back to PENDING and forward again, or re-syncing
+// the sheet, never creates a second dispatch row for the same item.
+function autoCreateDispatchFromRequest(r) {
+  if (!r) return;
+  if (!r.tid && !r.serial) return; // nothing to key a dispatch row off of
+  // Same TID can have several different items dispatched separately
+  // (terminal, battery, cable, etc.) — only skip if this exact TID+ItemType
+  // (or serial) is already outstanding in the Dispatch Log.
+  const alreadyDispatched = db.dispatch.some(d => {
+    if (r.serial && d.serial === r.serial) return true;
+    if (r.tid && d.tid === r.tid) return sameItemType(d.itemType, r.itemType);
+    return false;
+  });
+  if (alreadyDispatched) return;
+
+  const now = new Date();
+  const descBits = [];
+  if (r.bank)  descBits.push('Bank: ' + r.bank);
+  if (r.model) descBits.push('Model: ' + r.model);
+
+  // Due 7 days from the day this dispatch entry is created.
+  const due = new Date(now);
+  due.setDate(due.getDate() + 7);
+
+  db.dispatch.push({
+    date:      now.toISOString().split('T')[0],
+    time:      now.toTimeString().slice(0,5),
+    tid:       r.tid || '',
+    merchant:  r.merchant || '',
+    serial:    r.serial || '',
+    tech:      r.technician || '',
+    itemType:  r.itemType || '',
+    desc:      descBits.join(' · '),
+    dueDate:   due.toISOString().split('T')[0],
+    notes:     'Auto-added from Bank Request handover' + (r.address ? (' — ' + r.address) : ''),
+    enteredBy: r.handedOverBy || r.enteredBy || '',
+  });
+  renderDispatch();
+  window._autoDispatchDirty = true; // let sheet-sync know it needs to push db.dispatch to Firebase
+}
+
+// One-click "catch up" for requests that were already marked HANDED OVER
+// before this auto-dispatch feature existed (or that slipped through for
+// any other reason) — walks every HANDED_OVER request and creates its
+// Dispatch Log entry if one doesn't already exist. Safe to run repeatedly:
+// autoCreateDispatchFromRequest() already skips anything that's already
+// there, so this never creates duplicates.
+function backfillDispatchFromHandedOverRequests() {
+  const handedOver = db.requests.filter(r => r.status === 'HANDED_OVER');
+  if (!handedOver.length) { showToast('No handed-over requests found'); return; }
+
+  const before = db.dispatch.length;
+  handedOver.forEach(r => autoCreateDispatchFromRequest(r));
+  const added = db.dispatch.length - before;
+
+  if (added > 0) {
+    renderOverview(); renderDispatch();
+    saveDb();
+    showToast(`✅ Added ${added} past handed-over request${added===1?'':'s'} to Dispatch Log`);
+  } else {
+    showToast('✅ Already up to date — every handed-over request already has a Dispatch Log entry');
+  }
 }
 
 async function toggleRequestStatus(idx) {
@@ -3047,8 +3229,10 @@ async function toggleRequestStatus(idx) {
     r.status = 'HANDED_OVER';
     r.handedOverDate = new Date().toISOString().split('T')[0];
     r.handedOverBy = r.enteredBy || '';
+    autoCreateDispatchFromRequest(r);
   }
   renderRequests();
+  renderOverview();
   saveDb();
 
   // If this request came from the PARTS REQUEST sheet, write the new
@@ -3090,6 +3274,30 @@ async function updatePartStatus(idx, newPartStatus) {
     }
   } else {
     showToast('🔧 Part status set to "' + (newPartStatus || '—') + '"');
+  }
+}
+
+async function updateTechnician(idx, newTechnician) {
+  const r = db.requests[idx];
+  if (!r) return;
+  const prev = r.technician;
+  if (prev === newTechnician) return;
+  r.technician = newTechnician;
+  renderRequests();
+  saveDb();
+
+  if (r._sheetRow) {
+    const ok = await pushTechnicianToSheet(r._sheetRow, newTechnician);
+    if (ok) {
+      showToast('👤 Technician set to "' + (newTechnician || '—') + '" (sheet updated)');
+    } else {
+      r.technician = prev;
+      renderRequests();
+      saveDb();
+      showToast('⚠️ Failed to update sheet — change reverted', true);
+    }
+  } else {
+    showToast('👤 Technician set to "' + (newTechnician || '—') + '"');
   }
 }
 
@@ -3422,7 +3630,7 @@ function openEntryModal(type) {
         </div>
         <div class="form-group">
           <label class="form-label">Item Type</label>
-          <input class="form-input" type="text" id="r-itemtype" placeholder="e.g. Power Adapter">
+          <input class="form-input" type="text" id="r-itemtype" placeholder="e.g. Power Adapter" oninput="autoFillFromTID()">
         </div>
         <div class="form-group">
           <label class="form-label">Condition *</label>
@@ -3472,12 +3680,26 @@ function updateDispatchInfoHeader() {
 function autoFillFromTID() {
   const tid    = document.getElementById('r-tid').value.trim();
   const hint   = document.getElementById('tid-hint');
-  const match  = db.dispatch.find(d => d.tid === tid);
   const hdr    = document.getElementById('return-info-header');
+
+  // A TID can have several different items dispatched against it (terminal,
+  // battery, cable, etc.) — gather every outstanding one instead of just
+  // grabbing the first record, so we don't silently auto-fill the wrong item.
+  const allForTid = db.dispatch.filter(d => d.tid === tid);
+  const outstanding = allForTid.filter(d => getStatus(d) !== 'RETURNED');
+  const candidates = outstanding.length ? outstanding : allForTid;
+
+  // If the technician already typed an Item Type, prefer the candidate that
+  // matches it (lets them return the right one when a TID has several).
+  const typedType = document.getElementById('r-itemtype').value.trim();
+  const match = (typedType && candidates.find(d => sameItemType(d.itemType, typedType))) || candidates[0];
 
   if (match) {
     hint.style.color = 'var(--success)';
     hint.textContent = `✅ Found: ${match.tech} — ${match.itemType} (${fmtDate(match.date)})`;
+    if (candidates.length > 1) {
+      hint.textContent += ` · ⚠ ${candidates.length} items under this TID (${candidates.map(d=>d.itemType||'—').join(', ')}) — check Item Type is correct`;
+    }
     document.getElementById('r-itemtype').value = match.itemType || '';
     if (match.date)     document.getElementById('r-dispatchdate').value = match.date;
     if (match.serial)   document.getElementById('r-serial').value = match.serial;
@@ -3514,7 +3736,14 @@ function saveDispatch() {
   const itype  = document.getElementById('f-itemtype').value.trim();
   const merchant = document.getElementById('f-merchant').value.trim();
   if (!tech || !tid || !itype) { showToast('Technician, Item Type & TID are required', true); return; }
-  if (db.dispatch.find(d => d.tid === tid)) { showToast('TID number already exists in Dispatch Log', true); return; }
+  // A TID can legitimately have several different items dispatched against
+  // it over time (terminal, battery, cable, etc.) — so TID alone is not a
+  // duplicate. Only block if this exact TID + Item Type combo is already
+  // outstanding (not yet returned) in the Dispatch Log.
+  const dupe = db.dispatch.find(d =>
+    d.tid === tid && sameItemType(d.itemType, itype) && getStatus(d) !== 'RETURNED'
+  );
+  if (dupe) { showToast(`This TID already has an outstanding "${itype}" entry in the Dispatch Log`, true); return; }
   const e = {
     date:       document.getElementById('f-date').value,
     time:       document.getElementById('f-time').value,
@@ -3566,6 +3795,7 @@ function saveReturn() {
 function openRequestModal(editIdx) {
   const r = editIdx != null ? db.requests[editIdx] : null;
   const admins = db.staff.filter(s=>s.role==='DATA ENTRY STAFF'&&s.active==='YES').map(s=>s.name);
+  const technicians = db.staff.filter(s=>s.role==='TECHNICIAN'&&s.active==='YES').map(s=>s.name);
   const banks     = [...new Set(db.requests.map(x=>x.bank))].filter(Boolean).sort();
   const itemTypes = [...new Set([...db.requests.map(x=>x.itemType), ...db.dispatch.map(x=>x.itemType)])].filter(Boolean).sort();
   const today = new Date().toISOString().split('T')[0];
@@ -3627,6 +3857,14 @@ function openRequestModal(editIdx) {
           ${PART_STATUS_OPTIONS.map(o=>`<option value="${esc(o)}"${r&&r.partStatus===o?' selected':''}>${esc(PART_STATUS_STYLE[o].icon)} ${esc(o)}</option>`).join('')}
         </select>
       </div>
+      <div class="form-group">
+        <label class="form-label">Technician</label>
+        <select class="form-select" id="rq-technician">
+          <option value=""${!r||!r.technician?' selected':''}>— Unassigned —</option>
+          ${technicians.map(t=>`<option${r&&r.technician===t?' selected':''}>${esc(t)}</option>`).join('')}
+          ${r&&r.technician&&!technicians.includes(r.technician)?`<option selected>${esc(r.technician)}</option>`:''}
+        </select>
+      </div>
       <div class="form-group full">
         <label class="form-label">Notes / Remarks</label>
         <input class="form-input" type="text" id="rq-notes" placeholder="Optional notes" value="${r?esc(r.notes||''):''}">
@@ -3663,8 +3901,10 @@ function saveRequest(editIdx) {
     notes:      g('rq-notes').trim(),
     enteredBy:  g('rq-enteredby'),
     partStatus: g('rq-partstatus'),
+    technician: g('rq-technician'),
   };
   let sheetRowToPush = null, newPartStatus = null;
+  let techRowToPush = null, newTechnician = null;
   if (editIdx == null) {
     data.status = 'PENDING';
     data.firstSeenAt = new Date().toISOString();
@@ -3676,14 +3916,18 @@ function saveRequest(editIdx) {
       if (r._sheetRow && r.partStatus !== data.partStatus) {
         sheetRowToPush = r._sheetRow; newPartStatus = data.partStatus;
       }
+      if (r._sheetRow && r.technician !== data.technician) {
+        techRowToPush = r._sheetRow; newTechnician = data.technician;
+      }
       Object.assign(r, data);
     }
     closeModal(); showToast('✅ Request updated!');
   }
   renderRequests(); saveDb();
   // If this row is linked to the PARTS REQUEST sheet and its Part Status
-  // changed here, write that change back to the sheet too.
+  // or Technician changed here, write those changes back to the sheet too.
   if (sheetRowToPush) pushPartStatusToSheet(sheetRowToPush, newPartStatus);
+  if (techRowToPush) pushTechnicianToSheet(techRowToPush, newTechnician);
 }
 
 function closeModal() { document.getElementById('modal-overlay').classList.remove('open'); }
