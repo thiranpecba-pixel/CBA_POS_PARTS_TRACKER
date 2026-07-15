@@ -590,7 +590,9 @@ header {
 .tech-stat-label { font-size: 9px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 3px; }
 .tech-progress { height: 5px; background: var(--border); border-radius: 3px; overflow: hidden; margin-bottom: 6px; }
 .tech-progress-fill { height: 100%; border-radius: 3px; transition: width 0.9s cubic-bezier(0.4,0,0.2,1); }
-.tech-serials { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+.tech-serials { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); max-height: 220px; overflow-y: auto; }
+.tech-serials::-webkit-scrollbar { width: 5px; }
+.tech-serials::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 .tech-serial-item {
   font-family: 'DM Mono', monospace; font-size: 10px;
   color: var(--text-muted); padding: 2px 0; display: flex;
@@ -3448,8 +3450,7 @@ function renderOutstanding() {
 
     const serialsHtml = out.length
       ? `<div class="tech-serials">
-          ${out.slice(0,5).map(d=>`<div class="tech-serial-item"><div class="tech-serial-dot" style="background:${col}"></div>${esc(d.tid||d.serial)} — <span style="color:var(--text-dim)">${esc(d.itemType)}${d.desc ? ' · '+esc(d.desc) : ''}</span></div>`).join('')}
-          ${out.length>5 ? `<div style="font-size:10px;color:var(--text-dim);margin-top:4px">+${out.length-5} more…</div>` : ''}
+          ${out.map(d=>`<div class="tech-serial-item"><div class="tech-serial-dot" style="background:${col}"></div>${esc(d.tid||d.serial)} — <span style="color:var(--text-dim)">${esc(d.itemType)}${d.desc ? ' · '+esc(d.desc) : ''}</span></div>`).join('')}
         </div>` : '';
 
     return `<div class="tech-card">
