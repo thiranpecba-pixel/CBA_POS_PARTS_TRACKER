@@ -3443,7 +3443,7 @@ function renderOutstanding() {
           ${out.map(d=>`<div class="tech-serial-item"><div class="tech-serial-dot" style="background:${col}"></div>${esc(d.tid||d.serial)} — <span style="color:var(--text-dim)">${esc(d.itemType)}${d.desc ? ' · '+esc(d.desc) : ''}</span></div>`).join('')}
         </div>` : '';
 
-    return `<div class="tech-card">
+    return `<div class="tech-card" onclick="openTechDetail(${s.id})" style="cursor:pointer">
       <div class="tech-card-header">
         <div class="tech-avatar" style="background:${col}22;color:${col}">${esc(s.name.charAt(0))}</div>
         <div style="flex:1">
@@ -3468,6 +3468,67 @@ function renderOutstanding() {
     <div class="kpi-card warn"><div class="kpi-label">Total Outstanding</div><div class="kpi-value" style="color:var(--warn)">${tot}</div><div class="kpi-sub">Across all technicians</div></div>
     <div class="kpi-card danger"><div class="kpi-label">Overdue Items</div><div class="kpi-value" style="color:var(--danger)">${totOv}</div><div class="kpi-sub">Past due date</div></div>
     <div class="kpi-card success"><div class="kpi-label">Technicians Clear</div><div class="kpi-value" style="color:var(--success)">${clr}</div><div class="kpi-sub">All parts returned</div></div>`;
+}
+
+// Full detail modal for a single technician — opened by clicking their
+// tile on the Outstanding tab. Shows contact info plus their complete
+// dispatch history (not just the outstanding items shown on the tile).
+function openTechDetail(id) {
+  const s = db.staff.find(x => x.id === id);
+  if (!s) return;
+  const today = new Date(); today.setHours(0,0,0,0);
+  const disp = db.dispatch.filter(d => d.tech === s.name)
+    .slice()
+    .sort((a,b) => new Date(b.date||0) - new Date(a.date||0));
+  const out = disp.filter(d => getStatus(d) !== 'RETURNED');
+  const ret = disp.filter(d => getStatus(d) === 'RETURNED');
+  const ov  = out.filter(d => d.dueDate && new Date(d.dueDate) < today);
+  const pct = disp.length ? Math.round(ret.length/disp.length*100) : 100;
+  const col = getColor(s.name, 0);
+
+  const rows = disp.length ? disp.map(d => {
+    const st = getStatus(d);
+    const stCls = st === 'RETURNED' ? 'pill-clear' : st === 'OVERDUE' ? 'pill-overdue' : 'pill-pending';
+    return `<tr>
+      <td class="mono" style="font-size:11px">${fmtDate(d.date)||'—'}</td>
+      <td><strong>${esc(d.tid||d.serial||'—')}</strong></td>
+      <td style="font-size:12px">${esc(d.itemType||'—')}</td>
+      <td style="font-size:11px;color:var(--text-dim)">${esc(d.desc||'—')}</td>
+      <td class="mono" style="font-size:11px">${fmtDate(d.dueDate)||'—'}</td>
+      <td><span class="pill ${stCls}" style="font-size:9px">${st}</span></td>
+    </tr>`;
+  }).join('') : `<tr><td colspan="6" style="text-align:center;color:var(--text-dim);padding:16px">No dispatch history yet</td></tr>`;
+
+  document.getElementById('modal-title').innerHTML = `👤 ${esc(s.name)}`;
+  document.getElementById('modal-body').innerHTML = `
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:18px">
+      <div class="tech-avatar" style="background:${col}22;color:${col};width:52px;height:52px;font-size:20px">${esc(s.name.charAt(0))}</div>
+      <div>
+        <div style="font-size:15px;font-weight:700;color:var(--text)">${esc(s.name)}</div>
+        <div style="font-size:12px;color:var(--text-dim);margin-top:2px">${esc(s.role||'—')} · 📍 ${esc(s.area||'—')}</div>
+        <div style="font-size:11px;color:var(--text-dim);margin-top:2px">${s.contact ? '📞 '+esc(s.contact) : ''}${s.contact && s.email ? ' · ' : ''}${s.email ? '✉️ '+esc(s.email) : ''}</div>
+      </div>
+      <span class="pill ${s.active==='YES'?'pill-clear':'pill-overdue'}" style="margin-left:auto">${s.active==='YES'?'ACTIVE':'INACTIVE'}</span>
+    </div>
+    <div class="tech-stats" style="margin-bottom:14px">
+      <div><div class="tech-stat-val" style="color:${col}">${disp.length}</div><div class="tech-stat-label">Sent</div></div>
+      <div><div class="tech-stat-val" style="color:var(--success)">${ret.length}</div><div class="tech-stat-label">Returned</div></div>
+      <div><div class="tech-stat-val" style="color:${out.length?'var(--warn)':'var(--text-dim)'}">${out.length}</div><div class="tech-stat-label">Pending</div></div>
+      <div><div class="tech-stat-val" style="color:${ov.length?'var(--danger)':'var(--text-dim)'}">${ov.length}</div><div class="tech-stat-label">Overdue</div></div>
+    </div>
+    <div class="tech-progress" style="margin-bottom:4px"><div class="tech-progress-fill" style="width:${pct}%;background:${col}"></div></div>
+    <div style="font-size:10px;color:var(--text-dim);margin-bottom:16px;font-family:'DM Mono',monospace">${pct}% returned</div>
+    <div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:8px">📋 Full Dispatch History</div>
+    <div style="max-height:280px;overflow-y:auto;border:1px solid var(--border);border-radius:10px">
+      <table class="data-table" style="margin:0">
+        <thead><tr><th>Date</th><th>TID/Serial</th><th>Item</th><th>Desc</th><th>Due</th><th>Status</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <div class="modal-actions" style="margin-top:16px">
+      <button class="btn btn-ghost" onclick="closeModal()">Close</button>
+    </div>`;
+  document.getElementById('modal-overlay').classList.add('open');
 }
 
 /* ============================================================
