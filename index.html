@@ -3218,6 +3218,18 @@ function renderRequests() {
 // TID (or same serial when there's no TID) — same rule saveDispatch() uses
 // — so toggling a request back to PENDING and forward again, or re-syncing
 // the sheet, never creates a second dispatch row for the same item.
+// Loose equality for TID/Serial matching — trims and lowercases both
+// sides. Bank Request TIDs/serials are typed by hand (bank agent via
+// Zoom chat, then re-typed into the sheet), so a stray space or case
+// difference from the auto-created Dispatch Log row is common. Without
+// this, a strict === match silently fails to find the row and
+// technician/other syncs look like they're doing nothing.
+function looseEq(a, b) {
+  const na = (a || '').trim().toLowerCase();
+  const nb = (b || '').trim().toLowerCase();
+  return !!na && na === nb;
+}
+
 // The Dispatch Log's "tech" column is only stamped once, at the moment
 // autoCreateDispatchFromRequest() creates the row — it's a snapshot, not a
 // live link back to the Bank Request. If the technician is assigned or
@@ -3233,8 +3245,8 @@ function syncTechnicianToDispatch(r, newTechnician) {
   let changed = false;
   db.dispatch.forEach(d => {
     if (getStatus(d) === 'RETURNED') return; // don't touch closed-out history
-    const matches = (r.serial && d.serial === r.serial) ||
-                     (r.tid && d.tid === r.tid && sameItemType(d.itemType, r.itemType));
+    const matches = looseEq(d.serial, r.serial) ||
+                     (looseEq(d.tid, r.tid) && sameItemType(d.itemType, r.itemType));
     if (matches && d.tech !== (newTechnician || '')) {
       d.tech = newTechnician || '';
       changed = true;
