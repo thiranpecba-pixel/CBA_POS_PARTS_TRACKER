@@ -3219,8 +3219,15 @@ function autoCreateDispatchFromRequest(r) {
   if (!r.tid && !r.serial) return; // nothing to key a dispatch row off of
   // Same TID can have several different items dispatched separately
   // (terminal, battery, cable, etc.) — only skip if this exact TID+ItemType
-  // (or serial) is already outstanding in the Dispatch Log.
+  // (or serial) is already OUTSTANDING in the Dispatch Log. A matching item
+  // that was already RETURNED doesn't count — that's an old, closed-out
+  // record, and a fresh bank request for the same TID/serial (e.g. the part
+  // failed again later) is a brand-new handover that deserves its own
+  // Dispatch Log entry. Without the getStatus() !== 'RETURNED' check here,
+  // any bank request referencing a TID/serial with return history would be
+  // silently skipped and never show up in the Dispatch Log.
   const alreadyDispatched = db.dispatch.some(d => {
+    if (getStatus(d) === 'RETURNED') return false;
     if (r.serial && d.serial === r.serial) return true;
     if (r.tid && d.tid === r.tid) return sameItemType(d.itemType, r.itemType);
     return false;
