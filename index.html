@@ -1215,6 +1215,14 @@ header {
   font-family: 'DM Mono', 'Courier New', monospace;
   word-break: break-all; line-height: 1.4;
 }
+.pdf-tid-row {
+  font-size: 7.5px; color: #64748b; line-height: 1.5;
+  display: flex; gap: 4px; align-items: baseline;
+}
+.pdf-tid-row .pdf-tid-num {
+  font-family: 'DM Mono', 'Courier New', monospace;
+  font-weight: 700; color: #1e3a5f; flex-shrink: 0;
+}
 
 /* ── Footer ── */
 .pdf-footer {
@@ -4504,7 +4512,10 @@ function doExport() {
 
   function addSheet(name, headers, rows) {
     const ws = XLSX.utils.aoa_to_sheet([headers].concat(rows));
-    ws['!cols'] = headers.map(h => ({ wch: Math.max(String(h).length+4, 14) }));
+    ws['!cols'] = headers.map((h, i) => {
+      const maxContent = rows.reduce((m, r) => Math.max(m, String(r[i] ?? '').length), 0);
+      return { wch: Math.min(Math.max(String(h).length + 4, maxContent + 2, 14), 60) };
+    });
     XLSX.utils.book_append_sheet(wb, ws, name);
   }
 
@@ -4532,10 +4543,19 @@ function doExport() {
         const out =disp.filter(d=>getStatus(d)!=='RETURNED');
         const ret =disp.filter(d=>getStatus(d)==='RETURNED');
         const ov  =out.filter(d=>d.dueDate && new Date(d.dueDate)<t2);
+        // Same detail as the app's Outstanding tab (TID + item type +
+        // description), not just bare TIDs. Semicolon-separated since item
+        // descriptions can themselves contain commas (e.g. "BATTERY,
+        // ADAPTER WITH CABLE").
+        const tidDetail = out.map(d => {
+          const tid = d.tid || d.serial || '—';
+          const detail = [d.itemType, d.desc].filter(Boolean).join(' · ');
+          return detail ? `${tid} — ${detail}` : tid;
+        }).join('; ');
         return [s.name,s.area,disp.length,ret.length,out.length,ov.length,
           disp.length?Math.round(ret.length/disp.length*100)+'%':'100%',
           ov.length>0?'OVERDUE':out.length>0?'PENDING':'CLEAR',
-          out.map(d=>d.tid||d.serial).join(', ')];
+          tidDetail];
       })
     );
   }
@@ -4810,7 +4830,14 @@ function doPdfExport() {
       const rate   = disp.length ? Math.round(ret.length / disp.length * 100) : 100;
       const status = ov.length>0 ? 'OVERDUE' : out.length>0 ? 'PENDING' : 'CLEAR';
       const cc     = status==='OVERDUE' ? 'overdue-card' : status==='CLEAR' ? 'clear-card' : 'pending-card';
-      const tids   = out.map(d=>d.tid||d.serial).filter(Boolean).join(', ') || '—';
+      // Same level of detail as the app's Outstanding tab (TID + item type
+      // + description), not just a bare comma-separated TID list — that
+      // bare list was the visible mismatch between the PDF and the app.
+      const tidRows = out.map(d => {
+        const tid = esc(d.tid || d.serial || '—');
+        const detail = [d.itemType, d.desc].filter(Boolean).map(esc).join(' · ');
+        return `<div class="pdf-tid-row"><span class="pdf-tid-num">${tid}</span><span>${detail ? '— ' + detail : ''}</span></div>`;
+      }).join('');
       const rateColor = rate>=80 ? '#059669' : rate>=50 ? '#d97706' : '#dc2626';
       cards += `<div class="pdf-tech-card ${cc}">
         <div class="pdf-tech-name">${esc(s.name)}</div>
@@ -4821,16 +4848,16 @@ function doPdfExport() {
             <div class="pdf-tech-stat-lbl">Sent</div>
           </div>
           <div class="pdf-tech-stat">
-            <div class="pdf-tech-stat-val ${out.length>0?'warn':'green'}">${out.length}</div>
-            <div class="pdf-tech-stat-lbl">Out</div>
+            <div class="pdf-tech-stat-val green">${ret.length}</div>
+            <div class="pdf-tech-stat-lbl">Returned</div>
           </div>
           <div class="pdf-tech-stat">
-            <div class="pdf-tech-stat-val ${ov.length>0?'danger':''}">${ov.length}</div>
-            <div class="pdf-tech-stat-lbl">Overdue</div>
+            <div class="pdf-tech-stat-val ${out.length>0?'warn':''}">${out.length}</div>
+            <div class="pdf-tech-stat-lbl">Pending</div>
           </div>
         </div>
         <div class="pdf-tech-meta">Rate: <strong style="color:${rateColor}">${rate}%</strong> &nbsp;·&nbsp; <strong>${status}</strong></div>
-        ${out.length ? `<div class="pdf-tids">⚠ ${esc(tids)}</div>` : ''}
+        ${tidRows}
       </div>`;
     });
     if (!cards) cards = `<p style="color:#94a3b8;font-size:10px">No technicians found.</p>`;
