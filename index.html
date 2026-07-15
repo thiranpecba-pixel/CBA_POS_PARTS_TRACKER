@@ -1147,15 +1147,16 @@ header {
 .pdf-tbl-dispatch col:nth-child(10) { width: 11%; }  /* Entered By */
 
 /* ── Return table column widths (9 cols) ── */
-.pdf-tbl-returns col:nth-child(1) { width: 9%;  }   /* Return Date */
-.pdf-tbl-returns col:nth-child(2) { width: 9%;  }   /* TID */
-.pdf-tbl-returns col:nth-child(3) { width: 13%; }   /* Merchant */
-.pdf-tbl-returns col:nth-child(4) { width: 9%;  }   /* Serial */
-.pdf-tbl-returns col:nth-child(5) { width: 11%; }   /* Tech */
-.pdf-tbl-returns col:nth-child(6) { width: 9%;  }   /* Item Type */
-.pdf-tbl-returns col:nth-child(7) { width: 10%; }   /* Condition */
-.pdf-tbl-returns col:nth-child(8) { width: 19%; }   /* Remarks */
-.pdf-tbl-returns col:nth-child(9) { width: 11%; }   /* Entered By */
+.pdf-tbl-returns col:nth-child(1)  { width: 8%;  }   /* Return Date */
+.pdf-tbl-returns col:nth-child(2)  { width: 8%;  }   /* TID */
+.pdf-tbl-returns col:nth-child(3)  { width: 11%; }   /* Merchant */
+.pdf-tbl-returns col:nth-child(4)  { width: 8%;  }   /* Serial */
+.pdf-tbl-returns col:nth-child(5)  { width: 10%; }   /* Tech */
+.pdf-tbl-returns col:nth-child(6)  { width: 8%;  }   /* Item Type */
+.pdf-tbl-returns col:nth-child(7)  { width: 13%; }   /* Description */
+.pdf-tbl-returns col:nth-child(8)  { width: 9%;  }   /* Condition */
+.pdf-tbl-returns col:nth-child(9)  { width: 15%; }   /* Remarks */
+.pdf-tbl-returns col:nth-child(10) { width: 10%; }   /* Entered By */
 
 /* ── Staff table column widths (7 cols) ── */
 .pdf-tbl-staff col:nth-child(1) { width: 5%;  }
@@ -1413,7 +1414,7 @@ header {
           <thead>
             <tr>
               <th>Return Date</th><th>TID No.</th><th>Merchant Name</th><th>Serial No.</th><th>Technician</th><th>Item Type</th>
-              <th>Condition</th><th>Remarks</th>
+              <th>Description</th><th>Condition</th><th>Remarks</th>
               <th>Original Dispatch</th><th>Entered By</th><th></th>
             </tr>
           </thead>
@@ -2419,16 +2420,16 @@ function renderBkvTable() {
     let rows = data.returns || [];
     const total = rows.length;
     if (_bkvTech !== 'all') rows = rows.filter(r => r.tech === _bkvTech);
-    rows = rows.filter(r => bkvMatchesSearch(r, ['tid','serial','merchant','tech','itemType','condition','remarks','enteredBy']));
+    rows = rows.filter(r => bkvMatchesSearch(r, ['tid','serial','merchant','tech','itemType','desc','condition','remarks','enteredBy']));
     if (countEl) countEl.textContent = `${rows.length} of ${total}`;
     area.innerHTML = !rows.length
       ? `<div class="bkv-empty">No return records match your search/filter</div>`
       : `<div class="bkv-table-wrap"><table class="bkv-table">
-          <thead><tr><th>Return Date</th><th>TID / Serial</th><th>Merchant</th><th>Serial No.</th><th>Technician</th><th>Item Type</th><th>Condition</th><th>Remarks</th><th>Entered By</th></tr></thead>
+          <thead><tr><th>Return Date</th><th>TID / Serial</th><th>Merchant</th><th>Serial No.</th><th>Technician</th><th>Item Type</th><th>Description</th><th>Condition</th><th>Remarks</th><th>Entered By</th></tr></thead>
           <tbody>${rows.map(r => `<tr>
             <td>${fmtDate(r.date)}</td><td>${esc(r.tid||r.serial||'—')}</td><td>${esc(r.merchant||'—')}</td>
             <td>${esc(r.serial||'—')}</td><td>${esc(r.tech||'—')}</td><td>${esc(r.itemType||'—')}</td>
-            <td>${esc(r.condition||'—')}</td><td>${esc(r.remarks||'—')}</td><td>${esc(r.enteredBy||'—')}</td>
+            <td>${esc(r.desc||'—')}</td><td>${esc(r.condition||'—')}</td><td>${esc(r.remarks||'—')}</td><td>${esc(r.enteredBy||'—')}</td>
           </tr>`).join('')}</tbody>
         </table></div>`;
   } else {
@@ -2499,6 +2500,20 @@ function sameItemType(a, b) {
   const nb = (b||'').trim().toLowerCase();
   if (!na || !nb) return true;
   return na === nb;
+}
+
+// Resolves the description to show for a Return record. Prefers whatever
+// was actually saved on the return, but if that's blank (e.g. older records
+// saved before auto-fill existed, or ones entered without a match) falls
+// back to a live lookup against the matching Dispatch Log entry — so the
+// two logs stay linked even for data that predates this behavior.
+function linkedDesc(r) {
+  if (r.desc && r.desc.trim()) return r.desc;
+  if (!r.tid) return '';
+  const allForTid = db.dispatch.filter(d => d.tid === r.tid);
+  if (!allForTid.length) return '';
+  const match = allForTid.find(d => sameItemType(d.itemType, r.itemType)) || allForTid[0];
+  return (match && match.desc) || '';
 }
 
 function getStatus(item) {
@@ -2964,13 +2979,13 @@ function renderReturns() {
   mSel.innerHTML = '<option value="">All Months</option>' + allMonths.map(m=>`<option value="${esc(m)}"${m===curM?' selected':''}>${esc(m)}</option>`).join('');
 
   const rows = db.returns.filter(r =>
-    (!s  || [r.tid,r.serial,r.merchant,r.tech,r.itemType,r.remarks].some(v=>String(v||'').toLowerCase().includes(s)))
+    (!s  || [r.tid,r.serial,r.merchant,r.tech,r.itemType,r.desc,r.remarks].some(v=>String(v||'').toLowerCase().includes(s)))
     && (!tf || r.tech===tf)
     && (!mf || monthKey(r.date)===mf)
   );
 
   document.getElementById('return-count-badge').textContent = rows.length + ' RECORDS';
-  document.getElementById('return-tbody').innerHTML = buildMonthlyTable(rows, 'date', 11, r => {
+  document.getElementById('return-tbody').innerHTML = buildMonthlyTable(rows, 'date', 12, r => {
     const idx = db.returns.indexOf(r);
     return `<td class="mono">${fmtDate(r.date)}</td>
       <td class="mono text-accent">${esc(r.tid||r.serial||'—')}</td>
@@ -2978,6 +2993,7 @@ function renderReturns() {
       <td class="mono text-dim">${esc(r.serial||'—')}</td>
       <td><strong>${esc(r.tech)}</strong></td>
       <td>${esc(r.itemType||'—')}</td>
+      <td class="text-dim" style="max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(linkedDesc(r))}">${esc(linkedDesc(r)||'—')}</td>
       <td><span class="pill pill-action" style="font-size:9px">${esc(r.condition||'—')}</span></td>
       <td class="text-dim" style="max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.remarks||'')}">${esc(r.remarks||'—')}</td>
       <td class="mono">${fmtDate(r.dispatchDate)}</td>
@@ -3805,6 +3821,10 @@ function openEntryModal(type) {
           <input class="form-input" type="text" id="r-itemtype" placeholder="e.g. Power Adapter" oninput="autoFillFromTID()">
         </div>
         <div class="form-group">
+          <label class="form-label">Description</label>
+          <input class="form-input" type="text" id="r-desc" placeholder="Auto-filled from dispatch">
+        </div>
+        <div class="form-group">
           <label class="form-label">Condition *</label>
           <select class="form-select" id="r-condition">
             <option>Broken</option><option>Faulty</option><option>Dead</option><option>Damaged</option><option>Other</option>
@@ -3876,6 +3896,7 @@ function autoFillFromTID() {
     if (match.date)     document.getElementById('r-dispatchdate').value = match.date;
     if (match.serial)   document.getElementById('r-serial').value = match.serial;
     if (match.merchant) document.getElementById('r-merchant').value = match.merchant;
+    document.getElementById('r-desc').value = match.desc || '';
     if (match.tech) {
       const sel = document.getElementById('r-tech');
       for (const opt of sel.options) if (opt.value === match.tech) { sel.value = opt.value; break; }
@@ -3900,6 +3921,36 @@ function autoFillFromTID() {
 
 // Legacy alias kept for safety
 function autoFillFromSerial() { autoFillFromTID(); }
+
+// Keeps the Description field in the Edit Return modal linked to the
+// matching Dispatch Log entry — mirrors autoFillFromTID() above, but only
+// touches the description (and a small hint), since the rest of the Edit
+// form holds values the admin may have deliberately changed and shouldn't
+// be silently overwritten.
+function autoFillEditReturnDesc() {
+  const tidEl  = document.getElementById('e-tid');
+  const typeEl = document.getElementById('e-itemtype');
+  const descEl = document.getElementById('e-r-desc');
+  const hint   = document.getElementById('e-r-desc-hint');
+  if (!tidEl || !descEl) return; // not on the Return edit form (e.g. Dispatch edit)
+
+  const tid = tidEl.value.trim();
+  if (!tid) { if (hint) hint.textContent = ''; return; }
+
+  const allForTid = db.dispatch.filter(d => d.tid === tid);
+  const outstanding = allForTid.filter(d => getStatus(d) !== 'RETURNED');
+  const candidates = outstanding.length ? outstanding : allForTid;
+
+  const typedType = typeEl ? typeEl.value.trim() : '';
+  const match = (typedType && candidates.find(d => sameItemType(d.itemType, typedType))) || candidates[0];
+
+  if (match) {
+    descEl.value = match.desc || '';
+    if (hint) hint.textContent = `(linked to Dispatch: ${match.itemType || '—'})`;
+  } else if (hint) {
+    hint.textContent = '(no matching Dispatch entry)';
+  }
+}
 
 function saveDispatch() {
   const tid    = document.getElementById('f-tid').value.trim();
@@ -3951,6 +4002,7 @@ function saveReturn() {
     serial:       document.getElementById('r-serial').value.trim(),
     merchant:     document.getElementById('r-merchant').value.trim(),
     tech, itemType: document.getElementById('r-itemtype').value.trim(),
+    desc:         document.getElementById('r-desc').value.trim(),
     condition:    document.getElementById('r-condition').value,
     remarks:      document.getElementById('r-remarks').value.trim(),
     dispatchDate: document.getElementById('r-dispatchdate').value,
@@ -4235,7 +4287,7 @@ function confirmRowDelete(logType, idx, btn) {
   if (!record) return;
   const label = logType==='request' ? ((record.bank||'') + ' · ' + (record.tid || record.serial)) : (record.tech + ' · ' + (record.tid || record.serial));
   const tr = btn.closest('tr');
-  const colCount = logType==='dispatch' ? 12 : logType==='return' ? 11 : 11;
+  const colCount = logType==='dispatch' ? 12 : logType==='return' ? 12 : 11;
   const pr = document.createElement('tr');
   pr.className = 'row-pw-row'; pr.id = 'row-pw-prompt';
   pr.innerHTML = `<td colspan="${colCount}"><div class="row-pw-inner">
@@ -4391,7 +4443,7 @@ function openEditModal(logType, idx) {
         </div>
         <div class="form-group">
           <label class="form-label">TID Number *</label>
-          <input class="form-input" type="text" id="e-tid" value="${esc(r.tid||'')}">
+          <input class="form-input" type="text" id="e-tid" value="${esc(r.tid||'')}" oninput="autoFillEditReturnDesc()">
         </div>
         <div class="form-group">
           <label class="form-label">Serial No.</label>
@@ -4411,8 +4463,12 @@ function openEditModal(logType, idx) {
         </div>
         <div class="form-group">
           <label class="form-label">Item Type</label>
-          <input class="form-input" type="text" id="e-itemtype" list="eitl2" value="${esc(r.itemType||'')}">
+          <input class="form-input" type="text" id="e-itemtype" list="eitl2" value="${esc(r.itemType||'')}" oninput="autoFillEditReturnDesc()">
           <datalist id="eitl2">${itemTypes.map(t=>`<option>${esc(t)}</option>`).join('')}</datalist>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Description <span class="text-dim" style="font-weight:400;font-size:10px" id="e-r-desc-hint"></span></label>
+          <input class="form-input" type="text" id="e-r-desc" value="${esc(linkedDesc(r))}">
         </div>
         <div class="form-group">
           <label class="form-label">Condition *</label>
@@ -4478,6 +4534,7 @@ function saveEdit(logType, idx) {
     r.merchant     = g('e-merchant').trim();
     r.tech         = tech;
     r.itemType     = g('e-itemtype').trim();
+    r.desc         = g('e-r-desc').trim();
     r.condition    = g('e-condition');
     r.dispatchDate = g('e-dispatchdate');
     r.remarks      = g('e-remarks').trim();
@@ -4579,8 +4636,8 @@ function doExport() {
   }
   if (document.getElementById('exp-returns').checked) {
     addSheet('RETURN LOG',
-      ['Return Date','Time','TID No.','Merchant Name','Serial No.','Technician','Item Type','Condition','Remarks','Original Dispatch Date','Entered By'],
-      f.rRows.map(r => [r.date,r.time,r.tid||r.serial,r.merchant,r.serial,r.tech,r.itemType,r.condition,r.remarks,r.dispatchDate,r.enteredBy])
+      ['Return Date','Time','TID No.','Merchant Name','Serial No.','Technician','Item Type','Description','Condition','Remarks','Original Dispatch Date','Entered By'],
+      f.rRows.map(r => [r.date,r.time,r.tid||r.serial,r.merchant,r.serial,r.tech,r.itemType,linkedDesc(r),r.condition,r.remarks,r.dispatchDate,r.enteredBy])
     );
   }
   if (document.getElementById('exp-outstanding').checked) {
@@ -4835,7 +4892,7 @@ function doPdfExport() {
   if (inclReturns) {
     let rows = '';
     if (!f.rRows.length) {
-      rows = `<tr><td colspan="9" style="text-align:center;color:#94a3b8;padding:14px">No return records in selected range</td></tr>`;
+      rows = `<tr><td colspan="10" style="text-align:center;color:#94a3b8;padding:14px">No return records in selected range</td></tr>`;
     } else {
       f.rRows.forEach(r => {
         rows += `<tr>
@@ -4845,6 +4902,7 @@ function doPdfExport() {
           <td style="font-family:'DM Mono','Courier New',monospace">${esc(r.serial||'—')}</td>
           <td>${esc(r.tech||'—')}</td>
           <td>${esc(r.itemType||'—')}</td>
+          <td>${esc(linkedDesc(r)||'—')}</td>
           <td>${esc(r.condition||'—')}</td>
           <td>${esc(r.remarks||'—')}</td>
           <td>${esc(r.enteredBy||'—')}</td>
@@ -4856,11 +4914,11 @@ function doPdfExport() {
         <div class="pdf-section-title">📥 Return Log <span>${f.rRows.length} records · ${dateRange}</span></div>
         <table class="pdf-table pdf-tbl-returns">
           <colgroup>
-            <col><col><col><col><col><col><col><col><col>
+            <col><col><col><col><col><col><col><col><col><col>
           </colgroup>
           <thead><tr>
             <th>Return Date</th><th>TID / Serial</th><th>Merchant</th><th>Serial No.</th>
-            <th>Technician</th><th>Item Type</th><th>Condition</th><th>Remarks</th><th>Entered By</th>
+            <th>Technician</th><th>Item Type</th><th>Description</th><th>Condition</th><th>Remarks</th><th>Entered By</th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>
