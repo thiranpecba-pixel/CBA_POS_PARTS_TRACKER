@@ -1489,7 +1489,6 @@ header {
         <option value="__NONE__">— Unassigned</option>
       </select>
       <button class="btn btn-primary btn-sm" onclick="openRequestModal()">＋ New Request</button>
-      <button class="btn btn-ghost btn-sm" onclick="backfillDispatchFromHandedOverRequests()" title="Add any already-Handed-Over requests that are missing from the Dispatch Log">📤 Backfill Dispatch Log</button>
       <button class="btn btn-ghost btn-sm" id="request-refresh-btn" onclick="manualSyncPartsRequestSheet()" title="Re-check the Google Sheet right now">🔄 Refresh</button>
       <span id="request-last-synced" style="font-size:11px;color:var(--text-dim);align-self:center;margin-left:2px"></span>
       <button class="btn btn-danger-outline btn-sm" onclick="openClearModal('request')">🗑 Clear Log</button>
@@ -1969,7 +1968,11 @@ function mergeSheetRequestsIntoDb(sheetRows) {
           // app's toggle button) — still needs a Dispatch Log entry.
           autoCreateDispatchFromRequest(existing);
         }
-        if (status === 'PENDING') { delete existing.handedOverDate; delete existing.handedOverBy; }
+        if (status === 'PENDING') {
+          delete existing.handedOverDate;
+          delete existing.handedOverBy;
+          removeAutoCreatedDispatchForRequest(existing);
+        }
         changed = true;
       }
     }
@@ -3312,6 +3315,33 @@ function autoCreateDispatchFromRequest(r) {
   window._autoDispatchDirty = true; // let sheet-sync know it needs to push db.dispatch to Firebase
 }
 
+// Mirror-image of autoCreateDispatchFromRequest(): when a request is put
+// back to PENDING, remove the Dispatch Log row that was auto-created for
+// it — but ONLY if it's safe to do so. We deliberately only remove a row
+// when ALL of these hold:
+//   1. It matches this request on serial, or on TID + item type.
+//   2. It's still OUTSTANDING (not yet RETURNED) — a returned row is a
+//      closed-out historical record and must never be deleted here.
+//   3. Its notes still start with the auto-add signature this app writes —
+//      i.e. nobody has since hand-edited it into a distinct manual entry.
+// If a row doesn't meet all three, we leave the Dispatch Log untouched
+// rather than risk deleting something a technician is relying on.
+function removeAutoCreatedDispatchForRequest(r) {
+  if (!r) return;
+  if (!r.tid && !r.serial) return;
+  const idx = db.dispatch.findIndex(d => {
+    if (getStatus(d) === 'RETURNED') return false;
+    if (!(d.notes || '').startsWith('Auto-added from Bank Request handover')) return false;
+    if (r.serial && d.serial === r.serial) return true;
+    if (r.tid && d.tid === r.tid) return sameItemType(d.itemType, r.itemType);
+    return false;
+  });
+  if (idx === -1) return;
+  db.dispatch.splice(idx, 1);
+  renderDispatch();
+  window._autoDispatchDirty = true; // let sheet-sync know it needs to push db.dispatch to Firebase
+}
+
 // One-click "catch up" for requests that were already marked HANDED OVER
 // before this auto-dispatch feature existed (or that slipped through for
 // any other reason) — walks every HANDED_OVER request and creates its
@@ -3344,6 +3374,7 @@ async function toggleRequestStatus(idx) {
     r.status = 'PENDING';
     delete r.handedOverBy;
     delete r.handedOverDate;
+    removeAutoCreatedDispatchForRequest(r);
   } else {
     r.status = 'HANDED_OVER';
     r.handedOverDate = new Date().toISOString().split('T')[0];
