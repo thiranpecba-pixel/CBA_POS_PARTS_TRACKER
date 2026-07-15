@@ -1929,6 +1929,10 @@ function mergeSheetRequestsIntoDb(sheetRows) {
       // Same authoritative-unless-in-flight rule for the TECHNICIAN column.
       if (existing.technician !== sr.technician && existing._sheetRow !== window._pendingTechnicianWriteRow) {
         existing.technician = sr.technician;
+        // Someone edited the TECHNICIAN column directly in the sheet — keep
+        // any already-created Dispatch Log row for this request in sync too,
+        // otherwise it silently keeps showing the old/blank technician.
+        if (syncTechnicianToDispatch(existing, sr.technician)) window._autoDispatchDirty = true;
         changed = true;
       }
       // The sheet's FIRST SEEN column is authoritative once it has a value —
@@ -3214,6 +3218,32 @@ function renderRequests() {
 // TID (or same serial when there's no TID) — same rule saveDispatch() uses
 // — so toggling a request back to PENDING and forward again, or re-syncing
 // the sheet, never creates a second dispatch row for the same item.
+// The Dispatch Log's "tech" column is only stamped once, at the moment
+// autoCreateDispatchFromRequest() creates the row — it's a snapshot, not a
+// live link back to the Bank Request. If the technician is assigned or
+// changed afterwards (via this app's dropdown, or edited directly in the
+// PARTS REQUEST sheet), the existing Dispatch Log row would otherwise stay
+// stale forever. This finds the matching OUTSTANDING dispatch row(s) for a
+// request (same matching rule as autoCreateDispatchFromRequest: serial, or
+// TID + item type) and updates their tech field too. Returns true if any
+// dispatch row was actually changed, so callers know whether db.dispatch
+// needs to be persisted.
+function syncTechnicianToDispatch(r, newTechnician) {
+  if (!r || (!r.tid && !r.serial)) return false;
+  let changed = false;
+  db.dispatch.forEach(d => {
+    if (getStatus(d) === 'RETURNED') return; // don't touch closed-out history
+    const matches = (r.serial && d.serial === r.serial) ||
+                     (r.tid && d.tid === r.tid && sameItemType(d.itemType, r.itemType));
+    if (matches && d.tech !== (newTechnician || '')) {
+      d.tech = newTechnician || '';
+      changed = true;
+    }
+  });
+  if (changed) renderDispatch();
+  return changed;
+}
+
 function autoCreateDispatchFromRequest(r) {
   if (!r) return;
   if (!r.tid && !r.serial) return; // nothing to key a dispatch row off of
@@ -3350,6 +3380,7 @@ async function updateTechnician(idx, newTechnician) {
   const prev = r.technician;
   if (prev === newTechnician) return;
   r.technician = newTechnician;
+  const dispatchChanged = syncTechnicianToDispatch(r, newTechnician);
   renderRequests();
   saveDb();
 
@@ -3359,6 +3390,7 @@ async function updateTechnician(idx, newTechnician) {
       showToast('👤 Technician set to "' + (newTechnician || '—') + '" (sheet updated)');
     } else {
       r.technician = prev;
+      if (dispatchChanged) syncTechnicianToDispatch(r, prev);
       renderRequests();
       saveDb();
       showToast('⚠️ Failed to update sheet — change reverted', true);
