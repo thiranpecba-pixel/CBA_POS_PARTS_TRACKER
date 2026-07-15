@@ -4643,11 +4643,17 @@ function doPdfExport() {
   const inclStaff       = document.getElementById('pdf-staff').checked;
 
   const t2 = new Date(); t2.setHours(0,0,0,0);
-  const total       = db.dispatch.length;
-  const returned    = db.returns.length;
-  const outstanding = db.dispatch.filter(d=>getStatus(d)!=='RETURNED').length;
-  const overdue     = db.dispatch.filter(d=>getStatus(d)==='OVERDUE').length;
-  const activeTechs = [...new Set(db.dispatch.filter(d=>getStatus(d)!=='RETURNED').map(d=>d.tech))].filter(Boolean).length;
+  // IMPORTANT: these must be derived from f.dRows/f.rRows (the date-filtered
+  // rows), not the full db.dispatch/db.returns — otherwise this summary
+  // card silently ignores the date range picked above, while the Dispatch/
+  // Return Log tables printed right below it (and the Excel export) do
+  // respect it. That mismatch is exactly what made the PDF and Excel
+  // exports show different numbers for the same date range.
+  const total       = f.dRows.length;
+  const returned    = f.dRows.filter(d=>getStatus(d)==='RETURNED').length;
+  const outstanding = f.dRows.filter(d=>getStatus(d)!=='RETURNED').length;
+  const overdue     = f.dRows.filter(d=>getStatus(d)==='OVERDUE').length;
+  const activeTechs = [...new Set(f.dRows.filter(d=>getStatus(d)!=='RETURNED').map(d=>d.tech))].filter(Boolean).length;
 
   /* ── COVER PAGE (new structure matching updated CSS) ── */
   let html = `
