@@ -489,6 +489,7 @@ header {
    OVERVIEW — BAR CHART
    ============================================================ */
 .bar-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px 20px; }
+#tech-bars .bar-grid { grid-template-columns: repeat(2, 1fr); }
 .bar-row { display: flex; flex-direction: column; gap: 6px; }
 .bar-row-top { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
 .bar-label { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
@@ -496,7 +497,7 @@ header {
 .bar-track { width: 100%; height: 7px; background: var(--border); border-radius: 4px; overflow: hidden; }
 .bar-fill { height: 100%; border-radius: 4px; transition: width 0.9s cubic-bezier(0.4,0,0.2,1); }
 @media (max-width: 900px) { .bar-grid { grid-template-columns: repeat(2, 1fr); } }
-@media (max-width: 500px)  { .bar-grid { grid-template-columns: 1fr; } }
+@media (max-width: 500px)  { .bar-grid, #tech-bars .bar-grid { grid-template-columns: 1fr; } }
 
 /* ============================================================
    OVERVIEW — DONUT
@@ -1337,23 +1338,6 @@ header {
           <div class="item-type-desc-label">📋 Breakdown by Item Type</div>
           <div id="item-type-desc"></div>
         </div>
-      </div>
-    </div>
-
-    <div class="grid-2">
-      <div class="card">
-        <div class="card-header">
-          <div class="card-title">🔴 Action Required</div>
-          <span class="card-badge badge-danger" id="action-count-badge">0 ITEMS</span>
-        </div>
-        <div class="card-body" id="action-list"></div>
-      </div>
-      <div class="card">
-        <div class="card-header">
-          <div class="card-title">🕐 Recent Activity</div>
-          <span class="card-badge badge-blue" id="recent-count-badge">LATEST 5</span>
-        </div>
-        <div class="card-body" id="recent-activity"></div>
       </div>
     </div>
 
@@ -2739,7 +2723,7 @@ function renderOverview() {
 
   // Bar chart — outstanding by tech
   const tc = {};
-  db.dispatch.forEach(d => { if (getStatus(d) !== 'RETURNED') tc[d.tech] = (tc[d.tech]||0)+1; });
+  db.dispatch.forEach(d => { if (getStatus(d) !== 'RETURNED') { const key = d.tech || 'Account holder requests'; tc[key] = (tc[key]||0)+1; } });
   const entries = Object.entries(tc).sort((a,b) => b[1]-a[1]);
   const mx = Math.max(...Object.values(tc), 1);
   document.getElementById('tech-bars').innerHTML = entries.length
@@ -2817,31 +2801,6 @@ function renderOverview() {
       </table>`;
   }
   document.getElementById('item-type-badge').textContent = ents.length + ' TYPES';
-
-  // Action required
-  document.getElementById('action-list').innerHTML = outstanding.slice(0,8).map(d => {
-    const ov = getStatus(d) === 'OVERDUE';
-    return `<div class="action-item">
-      <div class="action-icon">${ov?'🔴':'🟡'}</div>
-      <div class="action-text">
-        <strong>${esc(d.tech)} — ${esc(d.itemType)}</strong>
-        <span>TID: ${esc(d.tid||d.serial)} · Due: ${fmtDate(d.dueDate)}</span>
-      </div>
-      <span class="pill ${ov?'pill-overdue':'pill-pending'}">${ov?'OVERDUE':'PENDING'}</span>
-    </div>`;
-  }).join('') || '<div class="empty-state"><div class="icon">✅</div><p>No action needed</p></div>';
-  document.getElementById('action-count-badge').textContent = outstanding.length + ' ITEMS';
-
-  // Recent activity
-  document.getElementById('recent-activity').innerHTML = [...db.dispatch].reverse().slice(0,5).map((d,i) =>
-    `<div class="timeline-item">
-      <div class="timeline-dot" style="border-color:${getColor(d.tech,i)};color:${getColor(d.tech,i)}">${esc(d.tech.charAt(0))}</div>
-      <div>
-        <div class="timeline-title">${esc(d.itemType)} → ${esc(d.tech)}</div>
-        <div class="timeline-sub">${esc(d.serial)} · ${d.date||''} ${d.time||''}</div>
-      </div>
-    </div>`
-  ).join('') || '<div class="empty-state"><div class="icon">🕐</div><p>No recent activity</p></div>';
 
   // Description breakdown
   const dc = {};
