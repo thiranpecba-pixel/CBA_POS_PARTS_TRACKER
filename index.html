@@ -1370,6 +1370,7 @@ header {
       <select class="filter-select" id="dispatch-filter-month" onchange="renderDispatch()"><option value="">All Months</option></select>
       <button class="btn btn-primary btn-sm" onclick="openEntryModal('dispatch')">＋ New Dispatch</button>
       <button class="btn btn-danger-outline btn-sm" onclick="openClearModal('dispatch')">🗑 Clear Log</button>
+      <button class="btn btn-ghost btn-sm" onclick="bulkSyncLogSheet()" title="Pushes ALL Dispatch & Return records (including history logged before the Google Sheet was linked) to the Log Sheet">🔄 Push All to Log Sheet</button>
     </div>
     <div class="card">
       <div class="card-header">
@@ -1652,6 +1653,33 @@ const PARTS_SHEET_GID = '698981557'; // the "PARTS REQUEST" tab
 const PARTS_SHEET_READ_URL  = `https://docs.google.com/spreadsheets/d/${PARTS_SHEET_ID}/gviz/tq?tqx=out:json&gid=${PARTS_SHEET_GID}`;
 const PARTS_SHEET_WRITE_URL = 'https://script.google.com/macros/s/AKfycbyRdoaDYmMvxWKhkEdAgVsOB8cGax_7tDPtxCP8b3C5QKAxPyYnJMDovoArDwhL70Sq/exec'; // e.g. https://script.google.com/macros/s/AKfycb.../exec
 const PARTS_SHEET_POLL_MS   = 15000; // how often to re-check the sheet for new/updated rows
+
+/* ============================================================
+   CONFIG — Dispatch Log / Return Log Google Sheet mirror
+   Every time a Dispatch or Return entry is created (manually, or
+   auto-created from a Bank Request handover), this app fires a
+   one-way write to a small Google Apps Script Web App bound to the
+   spreadsheet below, which appends a row to that sheet's
+   "Dispatch Log" or "Return Log" tab. This is a MIRROR only — the
+   app's own Firebase copy of db.dispatch / db.returns remains the
+   source of truth; a failed write here never blocks or reverts the
+   local save.
+
+   Setup (one-time):
+   1. Open the spreadsheet, Extensions ▸ Apps Script, paste the
+      doPost script (see the assistant's instructions), and make
+      sure the two tabs are literally named "Dispatch Log" and
+      "Return Log" — the script auto-creates them with headers if
+      they don't exist yet.
+   2. Deploy ▸ New deployment ▸ type "Web app" ▸ Execute as "Me" ▸
+      Who has access "Anyone" ▸ Deploy. Copy the /exec URL.
+   3. Paste that URL into LOG_SHEET_WRITE_URL below.
+   4. Reload this app, open the ⚙️ Settings area and click
+      "🔄 Push all history to Log Sheet" once to backfill every
+      Dispatch/Return record that already exists locally.
+   ============================================================ */
+const LOG_SHEET_ID        = '1OD2rrzSjmB3LVg2QAWgX93dGZGwIbjvqmk6GhUm_zhc';
+const LOG_SHEET_WRITE_URL = 'https://script.google.com/macros/s/AKfycbw6WJ26Ao0miZLlCJUpuLOfe3SEcdwmi0q45kh5dJylv1H7gKH46OYUm1goBOvh8HS7/exec'; // e.g. https://script.google.com/macros/s/AKfycb.../exec
 
 /* ============================================================
    DATABASE — backed by Firebase Firestore
@@ -2143,6 +2171,113 @@ async function pushFirstSeenToSheet(sheetRow, iso) {
   } catch (e) {
     console.error('Failed to write FIRST SEEN back to sheet:', e);
     return false;
+  }
+}
+
+/* ============================================================
+   DISPATCH LOG / RETURN LOG — Google Sheet mirror (one-way push)
+   ============================================================ */
+
+// Maps a local dispatch entry object to the exact row shape the
+// Apps Script expects for the "Dispatch Log" tab.
+function dispatchEntryToSheetRow(e) {
+  return {
+    date: e.date || '', time: e.time || '', tid: e.tid || '',
+    merchant: e.merchant || '', serial: e.serial || '', tech: e.tech || '',
+    itemType: e.itemType || '', desc: e.desc || '', dueDate: e.dueDate || '',
+    notes: e.notes || '', enteredBy: e.enteredBy || '',
+  };
+}
+
+// Maps a local return entry object to the exact row shape the
+// Apps Script expects for the "Return Log" tab.
+function returnEntryToSheetRow(e) {
+  return {
+    date: e.date || '', time: e.time || '', tid: e.tid || '',
+    merchant: e.merchant || '', serial: e.serial || '', tech: e.tech || '',
+    itemType: e.itemType || '', desc: e.desc || '', condition: e.condition || '',
+    remarks: e.remarks || '', dispatchDate: e.dispatchDate || '', enteredBy: e.enteredBy || '',
+  };
+}
+
+// Fires a single Dispatch Log row off to the Log Sheet. Fire-and-forget:
+// this is a mirror only, so a failure here is logged/toasted quietly and
+// never blocks or reverts the local (Firebase-backed) save that already
+// happened by the time this is called.
+async function appendDispatchToLogSheet(entry) {
+  if (!LOG_SHEET_WRITE_URL || LOG_SHEET_WRITE_URL.includes('PASTE_YOUR')) {
+    console.warn('LOG_SHEET_WRITE_URL is not configured — skipping Dispatch Log Sheet mirror.');
+    return false;
+  }
+  try {
+    const res = await fetch(LOG_SHEET_WRITE_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // avoids a CORS preflight
+      body: JSON.stringify({ action: 'appendDispatch', row: dispatchEntryToSheetRow(entry) }),
+    });
+    const result = await verifySheetWriteResponse(res);
+    if (!result.ok) showToast('⚠️ Dispatch entry saved, but Log Sheet mirror failed', true);
+    return result.ok;
+  } catch (e) {
+    console.error('Failed to mirror Dispatch entry to Log Sheet:', e);
+    showToast('⚠️ Dispatch entry saved, but Log Sheet mirror failed', true);
+    return false;
+  }
+}
+
+// Fires a single Return Log row off to the Log Sheet. Same fire-and-forget
+// contract as appendDispatchToLogSheet() above.
+async function appendReturnToLogSheet(entry) {
+  if (!LOG_SHEET_WRITE_URL || LOG_SHEET_WRITE_URL.includes('PASTE_YOUR')) {
+    console.warn('LOG_SHEET_WRITE_URL is not configured — skipping Return Log Sheet mirror.');
+    return false;
+  }
+  try {
+    const res = await fetch(LOG_SHEET_WRITE_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action: 'appendReturn', row: returnEntryToSheetRow(entry) }),
+    });
+    const result = await verifySheetWriteResponse(res);
+    if (!result.ok) showToast('⚠️ Return logged, but Log Sheet mirror failed', true);
+    return result.ok;
+  } catch (e) {
+    console.error('Failed to mirror Return entry to Log Sheet:', e);
+    showToast('⚠️ Return logged, but Log Sheet mirror failed', true);
+    return false;
+  }
+}
+
+// One-click "push everything" — sends every Dispatch and Return record
+// currently in db (including anything logged before the Log Sheet mirror
+// was set up) to the Apps Script, which WIPES and rewrites both tabs from
+// scratch. Safe to run repeatedly: it's always a full replace, never an
+// append-on-top, so re-running it can never create duplicate rows.
+async function bulkSyncLogSheet() {
+  if (!LOG_SHEET_WRITE_URL || LOG_SHEET_WRITE_URL.includes('PASTE_YOUR')) {
+    showToast('⚠️ Set LOG_SHEET_WRITE_URL first (see the config comment near the top of the script)', true);
+    return;
+  }
+  showToast('⏳ Pushing full Dispatch/Return history to Log Sheet…');
+  try {
+    const res = await fetch(LOG_SHEET_WRITE_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({
+        action: 'bulkSync',
+        dispatchRows: db.dispatch.map(dispatchEntryToSheetRow),
+        returnRows: db.returns.map(returnEntryToSheetRow),
+      }),
+    });
+    const result = await verifySheetWriteResponse(res);
+    if (result.ok) {
+      showToast(`✅ Pushed ${db.dispatch.length} dispatch & ${db.returns.length} return records to the Log Sheet`);
+    } else {
+      showToast('⚠️ Bulk push to Log Sheet failed — check console', true);
+    }
+  } catch (e) {
+    console.error('Bulk sync to Log Sheet failed:', e);
+    showToast('⚠️ Bulk push to Log Sheet failed — check console', true);
   }
 }
 
@@ -2738,7 +2873,7 @@ function renderOverview() {
 
   // Bar chart — outstanding by tech
   const tc = {};
-  db.dispatch.forEach(d => { if (getStatus(d) !== 'RETURNED') { const key = d.tech || 'Account holder requests'; tc[key] = (tc[key]||0)+1; } });
+  db.dispatch.forEach(d => { if (getStatus(d) !== 'RETURNED') { const key = d.tech || 'ACCOUNT HOLDER REQUESTS'; tc[key] = (tc[key]||0)+1; } });
   const entries = Object.entries(tc).sort((a,b) => b[1]-a[1]);
   const mx = Math.max(...Object.values(tc), 1);
   document.getElementById('tech-bars').innerHTML = entries.length
@@ -3273,7 +3408,7 @@ function autoCreateDispatchFromRequest(r) {
   const due = new Date(now);
   due.setDate(due.getDate() + 7);
 
-  db.dispatch.push({
+  const autoEntry = {
     date:      now.toISOString().split('T')[0],
     time:      now.toTimeString().slice(0,5),
     tid:       r.tid || '',
@@ -3285,9 +3420,11 @@ function autoCreateDispatchFromRequest(r) {
     dueDate:   due.toISOString().split('T')[0],
     notes:     'Auto-added from Bank Request handover' + (r.address ? (' — ' + r.address) : ''),
     enteredBy: r.handedOverBy || r.enteredBy || '',
-  });
+  };
+  db.dispatch.push(autoEntry);
   renderDispatch();
   window._autoDispatchDirty = true; // let sheet-sync know it needs to push db.dispatch to Firebase
+  appendDispatchToLogSheet(autoEntry);
 }
 
 // Mirror-image of autoCreateDispatchFromRequest(): when a request is put
@@ -3982,6 +4119,7 @@ function saveDispatch() {
   db.dispatch.push(e);
   closeModal(); showToast('✅ Dispatch entry added!');
   renderOverview(); renderDispatch(); saveDb();
+  appendDispatchToLogSheet(e);
 }
 
 function saveReturn() {
@@ -4011,6 +4149,7 @@ function saveReturn() {
   db.returns.push(e);
   closeModal(); showToast('✅ Return logged!');
   renderOverview(); renderReturns(); saveDb();
+  appendReturnToLogSheet(e);
 }
 
 /* ============================================================
