@@ -1298,7 +1298,7 @@ header {
         <div class="kpi-label">Total Returned</div>
         <div class="kpi-value" id="kpi-returned">0</div>
         <div class="kpi-sub">Broken parts received back</div>
-        <div id="kpi-returned-mismatch" style="display:none;font-size:10px;color:var(--warn);margin-top:6px;line-height:1.4"></div>
+        <div id="kpi-returned-mismatch" onclick="showOrphanReturns()" style="display:none;font-size:10px;color:var(--warn);margin-top:6px;line-height:1.4;cursor:pointer;text-decoration:underline;text-underline-offset:2px"></div>
       </div>
       <div class="kpi-card warn">
         <div class="kpi-label">Outstanding</div>
@@ -2862,10 +2862,11 @@ function renderOverview() {
   // of dispatch items actually reconciled as returned — this is the signal
   // that there's bad/orphaned data in the Return Log worth cleaning up.
   const mismatchEl = document.getElementById('kpi-returned-mismatch');
+  window._orphanReturns = orphanReturns;
   if (mismatchEl) {
     if (orphanReturns.length > 0) {
       mismatchEl.style.display = '';
-      mismatchEl.textContent = `⚠️ ${orphanReturns.length} entr${orphanReturns.length===1?'y':'ies'} in the Return Log ${orphanReturns.length===1?'doesn\'t':'don\'t'} match any dispatch record (${db.returns.length} logged in total) — check for a typo'd TID/serial or a duplicate entry.`;
+      mismatchEl.textContent = `⚠️ ${orphanReturns.length} entr${orphanReturns.length===1?'y':'ies'} in the Return Log ${orphanReturns.length===1?'doesn\'t':'don\'t'} match any dispatch record (${db.returns.length} logged in total) — click to see which.`;
     } else {
       mismatchEl.style.display = 'none';
     }
@@ -3008,6 +3009,73 @@ function renderOverview() {
         </table>
       </div>`;
   }
+}
+
+// Small edit-distance helper — used to suggest the most likely intended
+// TID when a Return Log entry doesn't match anything in the Dispatch Log
+// (usually a typo'd digit/letter).
+function _editDistance(a, b) {
+  a = String(a||''); b = String(b||'');
+  const m = a.length, n = b.length;
+  const dp = Array.from({length: m+1}, (_,i) => [i, ...Array(n).fill(0)]);
+  for (let j=0;j<=n;j++) dp[0][j] = j;
+  for (let i=1;i<=m;i++) for (let j=1;j<=n;j++) {
+    dp[i][j] = a[i-1]===b[j-1] ? dp[i-1][j-1] : 1+Math.min(dp[i-1][j-1], dp[i-1][j], dp[i][j-1]);
+  }
+  return dp[m][n];
+}
+function _closestDispatchTid(tid) {
+  if (!tid) return null;
+  let best = null, bestDist = Infinity;
+  db.dispatch.forEach(d => {
+    if (!d.tid) return;
+    const dist = _editDistance(tid, d.tid);
+    if (dist < bestDist) { bestDist = dist; best = d; }
+  });
+  // Only suggest it if it's genuinely close (small typo), not a random match.
+  if (best && bestDist > 0 && bestDist <= Math.max(2, Math.ceil(best.tid.length * 0.3))) {
+    return { dispatch: best, dist: bestDist };
+  }
+  return null;
+}
+
+// Shows exactly which Return Log row(s) triggered the "doesn't match any
+// dispatch record" warning on the Overview tab, with enough detail to fix
+// each one (typo'd TID/serial, or a genuine duplicate entry to remove).
+function showOrphanReturns() {
+  const orphans = window._orphanReturns || [];
+  if (!orphans.length) return;
+
+  const rows = orphans.map(r => {
+    const idx = db.returns.indexOf(r);
+    const suggestion = r.tid ? _closestDispatchTid(r.tid) : null;
+    const dupes = db.returns.filter(o => (r.tid && o.tid === r.tid) || (r.serial && r.serial === o.serial));
+    const isDuplicate = dupes.length > 1;
+    return `<div style="border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">
+        <div>
+          <div style="font-weight:700;font-size:13px">${esc(r.tid || r.serial || '(no TID/serial)')}</div>
+          <div style="font-size:11px;color:var(--text-dim);margin-top:2px">
+            ${fmtDate(r.date)} · Serial: ${esc(r.serial||'—')} · Tech: ${esc(r.tech||'—')} · Item: ${esc(r.itemType||'—')}
+          </div>
+        </div>
+        <button class="btn btn-primary" style="font-size:11px;padding:6px 10px" onclick="closeModal();openEditModal('return',${idx})">✏️ Fix This Entry</button>
+      </div>
+      ${isDuplicate ? `<div style="margin-top:8px;font-size:11px;color:var(--warn)">⚠️ This TID/Serial appears ${dupes.length} times in the Return Log — looks like a duplicate entry. Consider editing/removing the extra one.</div>` : ''}
+      ${suggestion ? `<div style="margin-top:8px;font-size:11px;color:var(--text-muted)">💡 Closest dispatch TID on record: <strong>${esc(suggestion.dispatch.tid)}</strong> (dispatched to ${esc(suggestion.dispatch.tech||'—')}) — possible typo?</div>` : ''}
+    </div>`;
+  }).join('');
+
+  document.getElementById('modal-title').innerHTML = `⚠️ ${orphans.length} Unmatched Return${orphans.length===1?'':'s'}`;
+  document.getElementById('modal-body').innerHTML = `
+    <div style="font-size:12px;color:var(--text-dim);margin-bottom:12px">
+      These rows are in the Return Log but don't match any TID or Serial in the Dispatch Log, so they can't be reconciled into "Total Returned". Fix the TID/Serial (typo) or remove the row if it's a duplicate.
+    </div>
+    ${rows}
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal()">Close</button>
+    </div>`;
+  document.getElementById('modal-overlay').classList.add('open');
 }
 
 /* ============================================================
