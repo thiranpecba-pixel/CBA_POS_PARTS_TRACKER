@@ -235,6 +235,18 @@ header {
   border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px;
 }
 
+/* Storage gauge badge */
+.storage-gauge {
+  display: flex; align-items: center; gap: 6px;
+  font-family: 'DM Mono', monospace; font-size: 11px; font-weight: 600;
+  border-radius: 20px; padding: 5px 12px; cursor: default;
+  border: 1px solid var(--border); background: var(--surface);
+  color: var(--text-dim); transition: var(--transition);
+}
+.storage-gauge.ok       { color: var(--success); border-color: rgba(16,185,129,0.3); background: rgba(16,185,129,0.08); }
+.storage-gauge.warn     { color: #f59e0b; border-color: rgba(245,158,11,0.35); background: rgba(245,158,11,0.08); }
+.storage-gauge.critical { color: var(--danger); border-color: rgba(239,68,68,0.4); background: rgba(239,68,68,0.1); animation: pulse 2s infinite; }
+
 /* ============================================================
    THEME TOGGLE
    ============================================================ */
@@ -1268,6 +1280,7 @@ header {
       <button class="btn btn-danger-outline btn-sm" onclick="triggerRestoreBackup()" title="Restore the live app from a saved backup file">⬆ Restore Backup</button>
       <input type="file" id="backup-file-input" accept="application/json,.json" style="display:none" onchange="handleViewBackupFile(event)">
       <input type="file" id="restore-file-input" accept="application/json,.json" style="display:none" onchange="handleRestoreBackupFile(event)">
+      <div class="storage-gauge" id="storage-gauge" title="Live database storage usage"></div>
       <div class="date-badge" id="date-badge"></div>
     </div>
   </header>
@@ -1739,6 +1752,7 @@ async function saveDb() {
       nextId:   db.nextId,
     });
   }
+  checkStorageAndMaybeWarn();
 }
 
 // Load db from Firestore on startup, then render
@@ -1759,6 +1773,12 @@ async function loadDb() {
   renderRequests();
   renderOverdueToast();
   document.getElementById('loading-overlay').style.display = 'none';
+
+  // Storage watchdog: check right away, then re-check periodically so
+  // growth from OTHER devices' saves (picked up via onSnapshot) still
+  // gets caught even if this terminal never calls saveDb() itself.
+  checkStorageAndMaybeWarn();
+  setInterval(checkStorageAndMaybeWarn, 5 * 60 * 1000);
 
   // Now that db.requests is loaded, start polling the PARTS REQUEST sheet
   syncPartsRequestSheet();
@@ -2305,7 +2325,10 @@ function initDb() {
    LOCAL BACKUP / RESTORE
    ============================================================ */
 // Save the entire db to a JSON file on the user's own computer.
-function downloadBackup() {
+// silent=true suppresses the toast (used by the automatic storage-limit backup,
+// which shows its own more informative toast/modal instead) and tags the
+// file with "Auto" so it's easy to tell manual vs automatic backups apart.
+function downloadBackup(silent) {
   const payload = {
     _backupType: 'CBA_TERMINAL_TRACKER_BACKUP',
     _version: 1,
@@ -2320,7 +2343,8 @@ function downloadBackup() {
   const url  = URL.createObjectURL(blob);
   const now  = new Date();
   const pad  = n => String(n).padStart(2,'0');
-  const fname = `CBA-Backup_${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}.json`;
+  const stamp = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}`;
+  const fname = silent ? `CBA-AutoBackup_${stamp}.json` : `CBA-Backup_${stamp}.json`;
 
   const a = document.createElement('a');
   a.href = url;
@@ -2330,7 +2354,103 @@ function downloadBackup() {
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 
-  showToast('💾 Backup saved: ' + fname);
+  if (!silent) showToast('💾 Backup saved: ' + fname);
+  return fname;
+}
+
+/* ============================================================
+   STORAGE WATCHDOG
+   ------------------------------------------------------------
+   Firestore hard-caps every single document at 1 MiB (1,048,576
+   bytes) — on EVERY plan, including the free Spark plan. That
+   1 MB-per-document ceiling is what this app will actually hit
+   first, long before the Spark plan's 1 GB *total project*
+   storage quota becomes relevant, because this app keeps its
+   entire live dataset (staff + dispatch + returns) in ONE
+   Firestore document ("cba_tracker/main"). Once that document
+   gets close to 1 MB, saves start failing outright.
+   This watchdog tracks that document's size, warns the user as
+   it climbs, and auto-saves a local backup + prompts data
+   cleanup once it gets dangerously close.
+   ============================================================ */
+const FIRESTORE_DOC_LIMIT   = 1048576;            // Firestore's hard per-document cap (1 MiB), fixed regardless of billing plan
+const STORAGE_WARN_PCT      = 0.70;                // show a heads-up banner/modal
+const STORAGE_CRITICAL_PCT  = 0.85;                // auto-backup + strongly prompt cleanup
+const AUTO_BACKUP_COOLDOWN_MS = 6 * 60 * 60 * 1000; // don't auto-download more than once every 6h
+const WARNING_SNOOZE_MS       = 6 * 60 * 60 * 1000; // "Remind me later" snoozes the modal for 6h
+
+// Bytes of exactly what gets sent to Firestore (mirrors saveDb's payload).
+// Uses Blob to get an accurate UTF-8 byte count, not just JS string length.
+function getDbPayloadBytes() {
+  const payload = JSON.stringify({ staff: db.staff, dispatch: db.dispatch, returns: db.returns, nextId: db.nextId });
+  return new Blob([payload]).size;
+}
+
+// Update the little header badge. Returns the current usage fraction (0-1).
+function renderStorageGauge() {
+  const el = document.getElementById('storage-gauge');
+  if (!el || !window._dbReady) return null;
+  const bytes = getDbPayloadBytes();
+  const pct = bytes / FIRESTORE_DOC_LIMIT;
+  const kb = (bytes / 1024).toFixed(0);
+  const capKb = (FIRESTORE_DOC_LIMIT / 1024).toFixed(0);
+  let cls = 'ok', label = 'Healthy';
+  if (pct >= STORAGE_CRITICAL_PCT) { cls = 'critical'; label = 'Critical'; }
+  else if (pct >= STORAGE_WARN_PCT) { cls = 'warn'; label = 'High'; }
+  el.className = 'storage-gauge ' + cls;
+  el.textContent = `💽 ${kb}KB / ${capKb}KB · ${Math.round(pct * 100)}%`;
+  el.title = `Live database storage: ${label} (${Math.round(pct*100)}% of Firestore's 1MB per-document limit)`;
+  return pct;
+}
+
+// Called after every save and periodically. Auto-backs-up and/or prompts
+// cleanup once usage crosses the warn/critical thresholds.
+function checkStorageAndMaybeWarn() {
+  const pct = renderStorageGauge();
+  if (pct == null || pct < STORAGE_WARN_PCT) return;
+
+  const now = Date.now();
+  const snoozeUntil = parseInt(localStorage.getItem('cba_storage_snooze_until') || '0', 10);
+
+  if (pct >= STORAGE_CRITICAL_PCT) {
+    const lastAuto = parseInt(localStorage.getItem('cba_storage_last_autobackup') || '0', 10);
+    if (now - lastAuto > AUTO_BACKUP_COOLDOWN_MS) {
+      const fname = downloadBackup(true);
+      localStorage.setItem('cba_storage_last_autobackup', String(now));
+      showToast('🚨 Storage nearly full — auto-backup saved: ' + fname, true);
+    }
+    if (now > snoozeUntil) openStorageWarningModal(pct, true);
+  } else if (now > snoozeUntil) {
+    openStorageWarningModal(pct, false);
+  }
+}
+
+function snoozeStorageWarning() {
+  localStorage.setItem('cba_storage_snooze_until', String(Date.now() + WARNING_SNOOZE_MS));
+  closeModal();
+}
+
+function openStorageWarningModal(pct, isCritical) {
+  const pctRound = Math.round(pct * 100);
+  document.getElementById('modal-title').innerHTML = isCritical
+    ? '🚨 Database Storage Nearly Full'
+    : '⚠️ Database Storage Getting High';
+  document.getElementById('modal-body').innerHTML = `
+    <div class="info-box" style="border-color:${isCritical ? 'var(--danger)' : '#f59e0b'};color:${isCritical ? '#fca5a5' : '#fbbf24'}">
+      The live database is at <strong>${pctRound}%</strong> of Firestore's 1&nbsp;MB per-document storage limit
+      (this limit is fixed on every Firebase plan, including the free Spark plan you're on — it's not the same
+      as the 1&nbsp;GB total project quota).
+      ${isCritical ? '<br><br>A backup file was just <strong>automatically saved</strong> to your computer so no history is lost.' : ''}
+      <br><br>Once this fills up completely, <strong>new dispatch, return, and staff entries will fail to save.</strong>
+      Please download a fresh backup and delete some old records below to free up space.
+    </div>
+    <div class="modal-actions" style="flex-wrap:wrap;gap:8px">
+      <button class="btn btn-ghost" onclick="snoozeStorageWarning()">Remind Me Later</button>
+      <button class="btn btn-backup" onclick="downloadBackup()">💾 Backup Now</button>
+      <button class="btn btn-danger-outline" onclick="closeModal();openClearModal('dispatch')">🗑 Clear Dispatch Log</button>
+      <button class="btn btn-danger-outline" onclick="closeModal();openClearModal('return')">🗑 Clear Return Log</button>
+    </div>`;
+  document.getElementById('modal-overlay').classList.add('open');
 }
 
 // Open the file picker so the user can choose a backup file to view.
@@ -2439,11 +2559,13 @@ function renderBackupView(data, fileName) {
       <div class="bkv-stat"><div class="bkv-stat-val">${data.staff.length}</div><div class="bkv-stat-lbl">Staff</div></div>
       <div class="bkv-stat"><div class="bkv-stat-val">${data.dispatch.length}</div><div class="bkv-stat-lbl">Dispatch</div></div>
       <div class="bkv-stat"><div class="bkv-stat-val">${data.returns.length}</div><div class="bkv-stat-lbl">Returns</div></div>
+      <div class="bkv-stat"><div class="bkv-stat-val">${(data.requests||[]).length}</div><div class="bkv-stat-lbl">Requests</div></div>
     </div>
     <div class="bkv-tabs">
       <button class="bkv-tab active" id="bkv-tab-dispatch" onclick="switchBkvTab('dispatch')">📤 Dispatch</button>
       <button class="bkv-tab" id="bkv-tab-returns" onclick="switchBkvTab('returns')">📥 Returns</button>
       <button class="bkv-tab" id="bkv-tab-staff" onclick="switchBkvTab('staff')">👥 Staff</button>
+      <button class="bkv-tab" id="bkv-tab-requests" onclick="switchBkvTab('requests')">📨 Requests</button>
     </div>
     <div id="bkv-filter-area"></div>
     <div id="bkv-table-area"></div>`;
@@ -2467,7 +2589,7 @@ function bkvStatusPill(status) {
 function switchBkvTab(which) {
   _bkvTab = which;
   _bkvSearch = ''; _bkvStatus = 'all'; _bkvTech = 'all';
-  ['dispatch','returns','staff'].forEach(t => document.getElementById('bkv-tab-'+t).classList.toggle('active', t===which));
+  ['dispatch','returns','staff','requests'].forEach(t => document.getElementById('bkv-tab-'+t).classList.toggle('active', t===which));
   renderBkvFilterBar();
   renderBkvTable();
 }
@@ -2487,6 +2609,13 @@ function renderBkvFilterBar() {
       <option value="all">All Technicians</option>
       ${techs.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join('')}
     </select>`;
+  } else if (_bkvTab === 'requests') {
+    const rows = data.requests || [];
+    const techs = [...new Set(rows.map(r => r.technician).filter(Boolean))].sort();
+    techOptions = `<select class="bkv-filter-select" id="bkv-tech-filter" onchange="bkvOnFilterChange()">
+      <option value="all">All Technicians</option>
+      ${techs.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join('')}
+    </select>`;
   }
   if (_bkvTab === 'dispatch') {
     statusOptions = `<select class="bkv-filter-select" id="bkv-status-filter" onchange="bkvOnFilterChange()">
@@ -2500,6 +2629,12 @@ function renderBkvFilterBar() {
       <option value="all">All Staff</option>
       <option value="YES">Active only</option>
       <option value="NO">Inactive only</option>
+    </select>`;
+  } else if (_bkvTab === 'requests') {
+    statusOptions = `<select class="bkv-filter-select" id="bkv-status-filter" onchange="bkvOnFilterChange()">
+      <option value="all">All Statuses</option>
+      <option value="PENDING">Pending</option>
+      <option value="HANDED_OVER">Handed Over</option>
     </select>`;
   }
 
@@ -2567,7 +2702,7 @@ function renderBkvTable() {
             <td>${esc(r.desc||'—')}</td><td>${esc(r.condition||'—')}</td><td>${esc(r.remarks||'—')}</td><td>${esc(r.enteredBy||'—')}</td>
           </tr>`).join('')}</tbody>
         </table></div>`;
-  } else {
+  } else if (_bkvTab === 'staff') {
     let rows = data.staff || [];
     const total = rows.length;
     if (_bkvStatus !== 'all') rows = rows.filter(s => s.active === _bkvStatus);
@@ -2580,6 +2715,23 @@ function renderBkvTable() {
           <tbody>${rows.map(s => `<tr>
             <td>${esc(s.name)}</td><td>${esc(s.role||'—')}</td><td>${esc(s.area||'—')}</td>
             <td>${esc(s.contact||'—')}</td><td>${esc(s.email||'—')}</td><td>${s.active==='YES'?'Active':'Inactive'}</td>
+          </tr>`).join('')}</tbody>
+        </table></div>`;
+  } else {
+    let rows = data.requests || [];
+    const total = rows.length;
+    if (_bkvTech !== 'all') rows = rows.filter(r => r.technician === _bkvTech);
+    if (_bkvStatus !== 'all') rows = rows.filter(r => (r.status||'PENDING') === _bkvStatus);
+    rows = rows.filter(r => bkvMatchesSearch(r, ['tid','serial','model','merchant','bank','address','itemType','technician','agent','enteredBy']));
+    if (countEl) countEl.textContent = `${rows.length} of ${total}`;
+    area.innerHTML = !rows.length
+      ? `<div class="bkv-empty">No request records match your search/filter</div>`
+      : `<div class="bkv-table-wrap"><table class="bkv-table">
+          <thead><tr><th>Date</th><th>TID / Serial</th><th>Bank</th><th>Merchant</th><th>Model</th><th>Item Type</th><th>Technician</th><th>Status</th><th>Entered By</th></tr></thead>
+          <tbody>${rows.map(r => `<tr>
+            <td>${fmtDate(r.date)}</td><td>${esc(r.tid||r.serial||'—')}</td><td>${esc(r.bank||'—')}</td>
+            <td>${esc(r.merchant||'—')}</td><td>${esc(r.model||'—')}</td><td>${esc(r.itemType||'—')}</td>
+            <td>${esc(r.technician||'—')}</td><td>${bkvStatusPill(r.status==='HANDED_OVER'?'RETURNED':'PENDING')}</td><td>${esc(r.enteredBy||'—')}</td>
           </tr>`).join('')}</tbody>
         </table></div>`;
   }
