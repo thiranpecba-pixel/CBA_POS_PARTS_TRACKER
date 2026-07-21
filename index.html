@@ -2443,13 +2443,13 @@ function openStorageWarningModal(pct, isCritical) {
       as the 1&nbsp;GB total project quota).
       ${isCritical ? '<br><br>A backup file was just <strong>automatically saved</strong> to your computer so no history is lost.' : ''}
       <br><br>Once this fills up completely, <strong>new dispatch, return, and staff entries will fail to save.</strong>
-      Please download a fresh backup and delete some old records below to free up space.
+      Please download a fresh backup and clear out old <strong>completed</strong> records below — items still
+      <strong>Pending</strong> or <strong>Overdue</strong> with a technician are never deleted by this.
     </div>
     <div class="modal-actions" style="flex-wrap:wrap;gap:8px">
       <button class="btn btn-ghost" onclick="snoozeStorageWarning()">Remind Me Later</button>
       <button class="btn btn-backup" onclick="downloadBackup()">💾 Backup Now</button>
-      <button class="btn btn-danger-outline" onclick="closeModal();openClearModal('dispatch')">🗑 Clear Dispatch Log</button>
-      <button class="btn btn-danger-outline" onclick="closeModal();openClearModal('return')">🗑 Clear Return Log</button>
+      <button class="btn btn-danger-outline" onclick="closeModal();openClearModal('returned')">🗑 Clear Completed (Returned) Records</button>
     </div>`;
   document.getElementById('modal-overlay').classList.add('open');
 }
@@ -4521,19 +4521,45 @@ function closeModal() { document.getElementById('modal-overlay').classList.remov
    ============================================================ */
 let _clearTarget = null;
 
+// Remove CLOSED transactions only: a dispatch record that has already come
+// back (status RETURNED), together with its matching return record.
+// Dispatch items that are still PENDING or OVERDUE — i.e. "outstanding",
+// still out with a technician — are NEVER touched by this. This is what
+// makes it safe to run automatically from the storage-limit warning without
+// risking the loss of anything still in progress.
+function clearReturnedRecords(months) {
+  const scoped = Array.isArray(months) && months.length > 0;
+  const toRemove = [];
+  const keptDispatch = [];
+  db.dispatch.forEach(d => {
+    const inScope = !scoped || months.includes(monthKey(d.date));
+    if (inScope && getStatus(d) === 'RETURNED') toRemove.push(d);
+    else keptDispatch.push(d);
+  });
+  db.dispatch = keptDispatch;
+  db.returns = db.returns.filter(r => !toRemove.some(d =>
+    (d.serial && r.serial === d.serial) ||
+    (d.tid && r.tid === d.tid && sameItemType(r.itemType, d.itemType))
+  ));
+  return toRemove.length;
+}
+
 function openClearModal(logType) {
   _clearTarget = { logType, scope: 'all', months: [] };
-  const logData = _logArr(logType);
+  const isReturnedOnly = logType === 'returned';
+  const logData = isReturnedOnly ? db.dispatch.filter(d => getStatus(d) === 'RETURNED') : _logArr(logType);
   const allMonths = [...new Set(logData.map(d=>monthKey(d.date)))].filter(Boolean).sort((a,b)=>new Date('1 '+a)-new Date('1 '+b));
 
-  document.getElementById('pw-title').innerHTML = logType==='dispatch' ? '🗑 Clear Dispatch Log' : logType==='return' ? '🗑 Clear Return Log' : '🗑 Clear Bank Requests Log';
+  document.getElementById('pw-title').innerHTML = isReturnedOnly ? '🗑 Clear Completed (Returned) Records'
+    : logType==='dispatch' ? '🗑 Clear Dispatch Log' : logType==='return' ? '🗑 Clear Return Log' : '🗑 Clear Bank Requests Log';
   document.getElementById('pw-body').innerHTML = `
     <div class="warn-box">⚠️ Cleared records cannot be recovered. Please choose carefully.</div>
+    ${isReturnedOnly ? `<div class="info-box" style="margin-bottom:14px">✅ Only dispatch items that have already been <strong>returned</strong> — plus their matching return record — are eligible here. Anything still <strong>Pending</strong> or <strong>Overdue</strong> is never touched.</div>` : ''}
     <div class="section-label">What to clear</div>
     <div class="clear-scope-grid">
       <div class="clear-scope-card active" id="scope-all" onclick="setClearScope('all')">
         <div class="clear-scope-title" style="color:var(--danger)">Clear All</div>
-        <div class="clear-scope-sub">All ${logData.length} records in ${logType} log</div>
+        <div class="clear-scope-sub">All ${logData.length} ${isReturnedOnly ? 'completed record' + (logData.length!==1?'s':'') : 'records in ' + logType + ' log'}</div>
       </div>
       <div class="clear-scope-card" id="scope-months" onclick="setClearScope('months')">
         <div class="clear-scope-title">By Month</div>
@@ -4601,6 +4627,8 @@ function executeClear() {
   } else if (logType === 'return') {
     if (scope==='all') { cleared=db.returns.length; db.returns=[]; }
     else { const b=db.returns.length; db.returns=db.returns.filter(r=>!months.includes(monthKey(r.date))); cleared=b-db.returns.length; }
+  } else if (logType === 'returned') {
+    cleared = clearReturnedRecords(scope==='months' ? months : null);
   } else {
     if (scope==='all') { cleared=db.requests.length; db.requests=[]; }
     else { const b=db.requests.length; db.requests=db.requests.filter(r=>!months.includes(monthKey(r.date))); cleared=b-db.requests.length; }
@@ -4608,6 +4636,7 @@ function executeClear() {
   closePwModal(); renderOverview();
   if (logType==='dispatch') renderDispatch();
   else if (logType==='return') renderReturns();
+  else if (logType==='returned') { renderDispatch(); renderReturns(); }
   else renderRequests();
   showToast(`🗑 ${cleared} record${cleared!==1?'s':''} cleared`); saveDb();
 }
