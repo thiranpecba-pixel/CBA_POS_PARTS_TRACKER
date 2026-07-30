@@ -1281,7 +1281,7 @@ header {
       <button class="btn btn-danger-outline btn-sm" onclick="triggerRestoreBackup()" title="Restore the live app from a saved backup file">⬆ Restore Backup</button>
       <input type="file" id="backup-file-input" accept="application/json,.json" style="display:none" onchange="handleViewBackupFile(event)">
       <input type="file" id="restore-file-input" accept="application/json,.json" style="display:none" onchange="handleRestoreBackupFile(event)">
-      <div class="storage-gauge" id="storage-gauge" title="Live database storage usage"></div>
+      <div class="storage-gauge" id="storage-gauge" title="Live database storage usage — click for details" onclick="showStorageDetails()" style="cursor:pointer"></div>
       <div class="date-badge" id="date-badge"></div>
     </div>
   </header>
@@ -1495,6 +1495,7 @@ header {
       <button class="btn btn-ghost btn-sm" id="request-refresh-btn" onclick="manualSyncPartsRequestSheet()" title="Re-check the Google Sheet right now">🔄 Refresh</button>
       <span id="request-last-synced" style="font-size:11px;color:var(--text-dim);align-self:center;margin-left:2px"></span>
       <button class="btn btn-danger-outline btn-sm" onclick="openClearModal('request')">🗑 Clear Log</button>
+      <button class="btn btn-danger-outline btn-sm" onclick="openClearModal('requests_handed')" title="Remove only requests already Handed Over, to free up local storage">🗑 Clear Handed Over</button>
     </div>
     <div class="card">
       <div class="card-header">
@@ -2390,6 +2391,24 @@ function getDbPayloadBytes() {
   return new Blob([payload]).size;
 }
 
+// Byte size of each top-level collection inside the Firestore payload, so
+// the user can see exactly what's eating the 1MB document limit before
+// deciding what to clear. Sorted largest-first.
+function getDbBreakdown() {
+  const parts = {
+    dispatch: db.dispatch,
+    returns:  db.returns,
+    staff:    db.staff,
+  };
+  const sizes = Object.entries(parts).map(([key, arr]) => ({
+    key,
+    count: arr.length,
+    bytes: new Blob([JSON.stringify(arr)]).size,
+  }));
+  sizes.sort((a, b) => b.bytes - a.bytes);
+  return sizes;
+}
+
 // Update the little header badge. Returns the current usage fraction (0-1).
 function renderStorageGauge() {
   const el = document.getElementById('storage-gauge');
@@ -2403,7 +2422,9 @@ function renderStorageGauge() {
   else if (pct >= STORAGE_WARN_PCT) { cls = 'warn'; label = 'High'; }
   el.className = 'storage-gauge ' + cls;
   el.textContent = `💽 ${kb}KB / ${capKb}KB · ${Math.round(pct * 100)}%`;
-  el.title = `Live database storage: ${label} (${Math.round(pct*100)}% of Firestore's 1MB per-document limit)`;
+  const breakdown = getDbBreakdown();
+  const breakdownLine = breakdown.map(b => `${b.key} ${(b.bytes/1024).toFixed(0)}KB (${b.count})`).join(' · ');
+  el.title = `Live database storage: ${label} (${Math.round(pct*100)}% of Firestore's 1MB per-document limit)\nBreakdown: ${breakdownLine}`;
   return pct;
 }
 
@@ -2434,8 +2455,42 @@ function snoozeStorageWarning() {
   closeModal();
 }
 
+// Lets the user open the storage breakdown/cleanup modal on demand (click
+// the header gauge) regardless of usage level or snooze state — the
+// automatic threshold-based popups below are separate from this.
+function showStorageDetails() {
+  const bytes = getDbPayloadBytes();
+  const pct = bytes / FIRESTORE_DOC_LIMIT;
+  openStorageWarningModal(pct, pct >= STORAGE_CRITICAL_PCT);
+}
+
 function openStorageWarningModal(pct, isCritical) {
   const pctRound = Math.round(pct * 100);
+  const breakdown = getDbBreakdown();
+  const totalBytes = breakdown.reduce((sum, b) => sum + b.bytes, 0) || 1;
+  const barColors = { dispatch: '#3b7ff5', returns: '#10b981', staff: '#a78bfa' };
+  const barLabels  = { dispatch: '📤 Dispatch Log', returns: '📥 Return Log', staff: '👥 Staff List' };
+  const clearAction = { dispatch: "openClearModal('dispatch')", returns: "openClearModal('return')", staff: null };
+
+  const breakdownHtml = breakdown.map(b => {
+    const share = Math.round(b.bytes / totalBytes * 100);
+    const color = barColors[b.key] || '#64748b';
+    const action = clearAction[b.key];
+    return `
+      <div style="margin-bottom:10px">
+        <div style="display:flex;justify-content:space-between;align-items:center;font-size:11.5px;margin-bottom:4px">
+          <span>${barLabels[b.key] || b.key} <span style="color:var(--text-dim)">(${b.count})</span></span>
+          <span style="display:flex;align-items:center;gap:8px">
+            <strong>${(b.bytes/1024).toFixed(0)}KB · ${share}%</strong>
+            ${action ? `<button class="btn btn-danger-outline btn-sm" style="padding:3px 8px;font-size:10.5px" onclick="closeModal();${action}">🗑 Clear</button>` : ''}
+          </span>
+        </div>
+        <div style="height:7px;border-radius:5px;background:var(--surface3);overflow:hidden">
+          <div style="height:100%;width:${share}%;background:${color}"></div>
+        </div>
+      </div>`;
+  }).join('');
+
   document.getElementById('modal-title').innerHTML = isCritical
     ? '🚨 Database Storage Nearly Full'
     : '⚠️ Database Storage Getting High';
@@ -2449,6 +2504,8 @@ function openStorageWarningModal(pct, isCritical) {
       Please download a fresh backup and clear out old <strong>completed</strong> records below — items still
       <strong>Pending</strong> or <strong>Overdue</strong> with a technician are never deleted by this.
     </div>
+    <div class="section-label" style="margin-top:14px">📊 What's taking up space</div>
+    <div style="margin-bottom:6px">${breakdownHtml}</div>
     <div class="modal-actions" style="flex-wrap:wrap;gap:8px">
       <button class="btn btn-ghost" onclick="snoozeStorageWarning()">Remind Me Later</button>
       <button class="btn btn-backup" onclick="downloadBackup()">💾 Backup Now</button>
@@ -4626,19 +4683,24 @@ function clearReturnedRecords(months) {
 function openClearModal(logType) {
   _clearTarget = { logType, scope: 'all', months: [] };
   const isReturnedOnly = logType === 'returned';
-  const logData = isReturnedOnly ? db.dispatch.filter(d => getStatus(d) === 'RETURNED') : _logArr(logType);
+  const isHandedOnly   = logType === 'requests_handed';
+  const logData = isReturnedOnly ? db.dispatch.filter(d => getStatus(d) === 'RETURNED')
+                : isHandedOnly   ? db.requests.filter(r => r.status === 'HANDED_OVER')
+                : _logArr(logType);
   const allMonths = [...new Set(logData.map(d=>monthKey(d.date)))].filter(Boolean).sort((a,b)=>new Date('1 '+a)-new Date('1 '+b));
 
   document.getElementById('pw-title').innerHTML = isReturnedOnly ? '🗑 Clear Completed (Returned) Records'
+    : isHandedOnly ? '🗑 Clear Handed Over Requests'
     : logType==='dispatch' ? '🗑 Clear Dispatch Log' : logType==='return' ? '🗑 Clear Return Log' : '🗑 Clear Bank Requests Log';
   document.getElementById('pw-body').innerHTML = `
     <div class="warn-box">⚠️ Cleared records cannot be recovered. Please choose carefully.</div>
     ${isReturnedOnly ? `<div class="info-box" style="margin-bottom:14px">✅ Only dispatch items that have already been <strong>returned</strong> — plus their matching return record — are eligible here. Anything still <strong>Pending</strong> or <strong>Overdue</strong> is never touched.</div>` : ''}
+    ${isHandedOnly ? `<div class="info-box" style="margin-bottom:14px">✅ Only requests already marked <strong>Handed Over</strong> are eligible here. Anything still <strong>Pending</strong> is never touched. Note: Bank Requests aren't stored in Firebase — this frees up space in this device's local storage (and doesn't touch the PARTS REQUEST Google Sheet).</div>` : ''}
     <div class="section-label">What to clear</div>
     <div class="clear-scope-grid">
       <div class="clear-scope-card active" id="scope-all" onclick="setClearScope('all')">
         <div class="clear-scope-title" style="color:var(--danger)">Clear All</div>
-        <div class="clear-scope-sub">All ${logData.length} ${isReturnedOnly ? 'completed record' + (logData.length!==1?'s':'') : 'records in ' + logType + ' log'}</div>
+        <div class="clear-scope-sub">All ${logData.length} ${(isReturnedOnly||isHandedOnly) ? 'completed record' + (logData.length!==1?'s':'') : 'records in ' + logType + ' log'}</div>
       </div>
       <div class="clear-scope-card" id="scope-months" onclick="setClearScope('months')">
         <div class="clear-scope-title">By Month</div>
@@ -4708,6 +4770,14 @@ function executeClear() {
     else { const b=db.returns.length; db.returns=db.returns.filter(r=>!months.includes(monthKey(r.date))); cleared=b-db.returns.length; }
   } else if (logType === 'returned') {
     cleared = clearReturnedRecords(scope==='months' ? months : null);
+  } else if (logType === 'requests_handed') {
+    const scoped = scope==='months' && months.length>0;
+    const before = db.requests.length;
+    db.requests = db.requests.filter(r => {
+      const eligible = r.status === 'HANDED_OVER' && (!scoped || months.includes(monthKey(r.date)));
+      return !eligible;
+    });
+    cleared = before - db.requests.length;
   } else {
     if (scope==='all') { cleared=db.requests.length; db.requests=[]; }
     else { const b=db.requests.length; db.requests=db.requests.filter(r=>!months.includes(monthKey(r.date))); cleared=b-db.requests.length; }
