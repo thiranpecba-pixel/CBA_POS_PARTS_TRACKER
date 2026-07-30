@@ -1375,6 +1375,7 @@ header {
     <div class="action-bar">
       <input class="search-input" id="dispatch-search" type="text" placeholder="🔍  Search TID, merchant, tech, item, serial…" oninput="renderDispatch()">
       <select class="filter-select" id="dispatch-filter-tech" onchange="renderDispatch()"><option value="">All Technicians</option></select>
+      <select class="filter-select" id="dispatch-filter-itemtype" onchange="renderDispatch()"><option value="">All Item Types</option></select>
       <select class="filter-select" id="dispatch-filter-status" onchange="renderDispatch()">
         <option value="">All Statuses</option>
         <option value="PENDING">⏳ Pending</option>
@@ -1414,6 +1415,7 @@ header {
     <div class="action-bar">
       <input class="search-input" id="return-search" type="text" placeholder="🔍  Search TID, merchant, tech, serial…" oninput="renderReturns()">
       <select class="filter-select" id="return-filter-tech" onchange="renderReturns()"><option value="">All Technicians</option></select>
+      <select class="filter-select" id="return-filter-itemtype" onchange="renderReturns()"><option value="">All Item Types</option></select>
       <select class="filter-select" id="return-filter-month" onchange="renderReturns()"><option value="">All Months</option></select>
       <button class="btn btn-primary btn-sm" onclick="openEntryModal('return')">＋ Log Return</button>
       <button class="btn btn-danger-outline btn-sm" onclick="openClearModal('return')">🗑 Clear Log</button>
@@ -1488,6 +1490,7 @@ header {
         <option value="">All Technicians</option>
         <option value="__NONE__">— Unassigned</option>
       </select>
+      <select class="filter-select" id="request-filter-itemtype" onchange="renderRequests()"><option value="">All Item Types</option></select>
       <button class="btn btn-primary btn-sm" onclick="openRequestModal()">＋ New Request</button>
       <button class="btn btn-ghost btn-sm" id="request-refresh-btn" onclick="manualSyncPartsRequestSheet()" title="Re-check the Google Sheet right now">🔄 Refresh</button>
       <span id="request-last-synced" style="font-size:11px;color:var(--text-dim);align-self:center;margin-left:2px"></span>
@@ -2549,6 +2552,7 @@ let _bkvTab = 'dispatch';
 let _bkvSearch = '';
 let _bkvStatus = 'all';
 let _bkvTech = 'all';
+let _bkvItemType = 'all';
 
 // Render a read-only viewer for a backup file's contents: summary + tabbed, searchable/filterable tables.
 function renderBackupView(data, fileName) {
@@ -2567,6 +2571,7 @@ function renderBackupView(data, fileName) {
       <button class="bkv-tab" id="bkv-tab-returns" onclick="switchBkvTab('returns')">📥 Returns</button>
       <button class="bkv-tab" id="bkv-tab-staff" onclick="switchBkvTab('staff')">👥 Staff</button>
       <button class="bkv-tab" id="bkv-tab-requests" onclick="switchBkvTab('requests')">📨 Requests</button>
+      <button class="bkv-tab" id="bkv-tab-itemtype" onclick="switchBkvTab('itemtype')">🏷 Item Type</button>
     </div>
     <div id="bkv-filter-area"></div>
     <div id="bkv-table-area"></div>`;
@@ -2589,8 +2594,8 @@ function bkvStatusPill(status) {
 
 function switchBkvTab(which) {
   _bkvTab = which;
-  _bkvSearch = ''; _bkvStatus = 'all'; _bkvTech = 'all';
-  ['dispatch','returns','staff','requests'].forEach(t => document.getElementById('bkv-tab-'+t).classList.toggle('active', t===which));
+  _bkvSearch = ''; _bkvStatus = 'all'; _bkvTech = 'all'; _bkvItemType = 'all';
+  ['dispatch','returns','staff','requests','itemtype'].forEach(t => document.getElementById('bkv-tab-'+t).classList.toggle('active', t===which));
   renderBkvFilterBar();
   renderBkvTable();
 }
@@ -2600,9 +2605,11 @@ function renderBkvFilterBar() {
   const data = _bkvData;
   const area = document.getElementById('bkv-filter-area');
   if (!data) return;
+  if (_bkvTab === 'itemtype') { area.innerHTML = ''; return; }
 
   let techOptions = '';
   let statusOptions = '';
+  let itemTypeOptions = '';
   if (_bkvTab === 'dispatch' || _bkvTab === 'returns') {
     const rows = data[_bkvTab] || [];
     const techs = [...new Set(rows.map(r => r.tech).filter(Boolean))].sort();
@@ -2610,12 +2617,22 @@ function renderBkvFilterBar() {
       <option value="all">All Technicians</option>
       ${techs.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join('')}
     </select>`;
+    const itemTypes = [...new Set(rows.map(r => r.itemType).filter(Boolean))].sort();
+    itemTypeOptions = `<select class="bkv-filter-select" id="bkv-itemtype-filter" onchange="bkvOnFilterChange()">
+      <option value="all">All Item Types</option>
+      ${itemTypes.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join('')}
+    </select>`;
   } else if (_bkvTab === 'requests') {
     const rows = data.requests || [];
     const techs = [...new Set(rows.map(r => r.technician).filter(Boolean))].sort();
     techOptions = `<select class="bkv-filter-select" id="bkv-tech-filter" onchange="bkvOnFilterChange()">
       <option value="all">All Technicians</option>
       ${techs.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join('')}
+    </select>`;
+    const itemTypes = [...new Set(rows.map(r => r.itemType).filter(Boolean))].sort();
+    itemTypeOptions = `<select class="bkv-filter-select" id="bkv-itemtype-filter" onchange="bkvOnFilterChange()">
+      <option value="all">All Item Types</option>
+      ${itemTypes.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join('')}
     </select>`;
   }
   if (_bkvTab === 'dispatch') {
@@ -2643,18 +2660,21 @@ function renderBkvFilterBar() {
     <div class="bkv-filter-bar">
       <input type="text" class="bkv-search" id="bkv-search-input" placeholder="🔍 Search ${_bkvTab}..." oninput="bkvOnFilterChange()">
       ${techOptions}
+      ${itemTypeOptions}
       ${statusOptions}
       <span class="bkv-filter-count" id="bkv-filter-count"></span>
     </div>`;
 }
 
 function bkvOnFilterChange() {
-  const searchEl  = document.getElementById('bkv-search-input');
-  const statusEl  = document.getElementById('bkv-status-filter');
-  const techEl    = document.getElementById('bkv-tech-filter');
-  _bkvSearch = searchEl ? searchEl.value.trim().toLowerCase() : '';
-  _bkvStatus = statusEl ? statusEl.value : 'all';
-  _bkvTech   = techEl ? techEl.value : 'all';
+  const searchEl   = document.getElementById('bkv-search-input');
+  const statusEl   = document.getElementById('bkv-status-filter');
+  const techEl     = document.getElementById('bkv-tech-filter');
+  const itemTypeEl = document.getElementById('bkv-itemtype-filter');
+  _bkvSearch   = searchEl ? searchEl.value.trim().toLowerCase() : '';
+  _bkvStatus   = statusEl ? statusEl.value : 'all';
+  _bkvTech     = techEl ? techEl.value : 'all';
+  _bkvItemType = itemTypeEl ? itemTypeEl.value : 'all';
   renderBkvTable();
 }
 
@@ -2674,6 +2694,7 @@ function renderBkvTable() {
     let rows = data.dispatch || [];
     const total = rows.length;
     if (_bkvTech !== 'all') rows = rows.filter(d => d.tech === _bkvTech);
+    if (_bkvItemType !== 'all') rows = rows.filter(d => d.itemType === _bkvItemType);
     if (_bkvStatus !== 'all') rows = rows.filter(d => bkvGetStatus(d, data.returns||[]) === _bkvStatus);
     rows = rows.filter(d => bkvMatchesSearch(d, ['tid','serial','merchant','tech','itemType','description','enteredBy']));
     if (countEl) countEl.textContent = `${rows.length} of ${total}`;
@@ -2691,6 +2712,7 @@ function renderBkvTable() {
     let rows = data.returns || [];
     const total = rows.length;
     if (_bkvTech !== 'all') rows = rows.filter(r => r.tech === _bkvTech);
+    if (_bkvItemType !== 'all') rows = rows.filter(r => r.itemType === _bkvItemType);
     rows = rows.filter(r => bkvMatchesSearch(r, ['tid','serial','merchant','tech','itemType','desc','condition','remarks','enteredBy']));
     if (countEl) countEl.textContent = `${rows.length} of ${total}`;
     area.innerHTML = !rows.length
@@ -2718,10 +2740,11 @@ function renderBkvTable() {
             <td>${esc(s.contact||'—')}</td><td>${esc(s.email||'—')}</td><td>${s.active==='YES'?'Active':'Inactive'}</td>
           </tr>`).join('')}</tbody>
         </table></div>`;
-  } else {
+  } else if (_bkvTab === 'requests') {
     let rows = data.requests || [];
     const total = rows.length;
     if (_bkvTech !== 'all') rows = rows.filter(r => r.technician === _bkvTech);
+    if (_bkvItemType !== 'all') rows = rows.filter(r => r.itemType === _bkvItemType);
     if (_bkvStatus !== 'all') rows = rows.filter(r => (r.status||'PENDING') === _bkvStatus);
     rows = rows.filter(r => bkvMatchesSearch(r, ['tid','serial','model','merchant','bank','address','itemType','technician','agent','enteredBy']));
     if (countEl) countEl.textContent = `${rows.length} of ${total}`;
@@ -2735,6 +2758,38 @@ function renderBkvTable() {
             <td>${esc(r.technician||'—')}</td><td>${bkvStatusPill(r.status==='HANDED_OVER'?'RETURNED':'PENDING')}</td><td>${esc(r.enteredBy||'—')}</td>
           </tr>`).join('')}</tbody>
         </table></div>`;
+  } else {
+    // Item Type summary: count of records per item type across Dispatch / Returns / Requests.
+    const dispatchRows = data.dispatch || [];
+    const returnRows   = data.returns  || [];
+    const requestRows  = data.requests || [];
+    const types = [...new Set([
+      ...dispatchRows.map(d => d.itemType),
+      ...returnRows.map(r => r.itemType),
+      ...requestRows.map(r => r.itemType)
+    ].filter(Boolean))].sort();
+
+    if (countEl) countEl.textContent = '';
+    if (!types.length) {
+      area.innerHTML = `<div class="bkv-empty">No item type data found in this backup</div>`;
+    } else {
+      let dTotal = 0, rTotal = 0, qTotal = 0;
+      const bodyRows = types.map(t => {
+        const dCount = dispatchRows.filter(d => d.itemType === t).length;
+        const rCount = returnRows.filter(r => r.itemType === t).length;
+        const qCount = requestRows.filter(r => r.itemType === t).length;
+        dTotal += dCount; rTotal += rCount; qTotal += qCount;
+        return `<tr>
+          <td>${esc(t)}</td><td>${dCount}</td><td>${rCount}</td><td>${qCount}</td><td><strong>${dCount+rCount+qCount}</strong></td>
+        </tr>`;
+      }).join('');
+      area.innerHTML = `<div class="bkv-table-wrap"><table class="bkv-table">
+          <thead><tr><th>Item Type</th><th>Dispatch</th><th>Returns</th><th>Requests</th><th>Total</th></tr></thead>
+          <tbody>${bodyRows}
+          <tr style="font-weight:700"><td>Total</td><td>${dTotal}</td><td>${rTotal}</td><td>${qTotal}</td><td>${dTotal+rTotal+qTotal}</td></tr>
+          </tbody>
+        </table></div>`;
+    }
   }
 }
 
@@ -3270,6 +3325,7 @@ function toggleMonthGroup(sk) {
 function renderDispatch() {
   const s   = document.getElementById('dispatch-search').value.toLowerCase();
   const tf  = document.getElementById('dispatch-filter-tech').value;
+  const itf = document.getElementById('dispatch-filter-itemtype').value;
   const sf  = document.getElementById('dispatch-filter-status').value;
   const mf  = document.getElementById('dispatch-filter-month').value;
 
@@ -3278,6 +3334,12 @@ function renderDispatch() {
   const curTech = techSel.value;
   const allTechs = [...new Set(db.dispatch.map(d=>d.tech))].sort();
   techSel.innerHTML = '<option value="">All Technicians</option>' + allTechs.map(t=>`<option value="${esc(t)}"${t===curTech?' selected':''}>${esc(t)}</option>`).join('');
+
+  // Rebuild item type dropdown
+  const itSel = document.getElementById('dispatch-filter-itemtype');
+  const curIt = itSel.value;
+  const allItemTypes = [...new Set(db.dispatch.map(d=>d.itemType))].filter(Boolean).sort();
+  itSel.innerHTML = '<option value="">All Item Types</option>' + allItemTypes.map(t=>`<option value="${esc(t)}"${t===curIt?' selected':''}>${esc(t)}</option>`).join('');
 
   // Rebuild month dropdown
   const mSel = document.getElementById('dispatch-filter-month');
@@ -3289,6 +3351,7 @@ function renderDispatch() {
     const st = getStatus(d);
     return (!s  || [d.tid,d.serial,d.merchant,d.tech,d.itemType,d.desc,d.notes].some(v=>String(v||'').toLowerCase().includes(s)))
         && (!tf || d.tech===tf)
+        && (!itf || d.itemType===itf)
         && (!sf || st===sf)
         && (!mf || monthKey(d.date)===mf);
   });
@@ -3320,6 +3383,7 @@ function renderDispatch() {
 function renderReturns() {
   const s  = document.getElementById('return-search').value.toLowerCase();
   const tf = document.getElementById('return-filter-tech').value;
+  const itf = document.getElementById('return-filter-itemtype').value;
   const mf = document.getElementById('return-filter-month').value;
 
   // Rebuild tech dropdown
@@ -3327,6 +3391,12 @@ function renderReturns() {
   const curTech = techSel.value;
   const allTechs = [...new Set(db.returns.map(r=>r.tech))].sort();
   techSel.innerHTML = '<option value="">All Technicians</option>' + allTechs.map(t=>`<option value="${esc(t)}"${t===curTech?' selected':''}>${esc(t)}</option>`).join('');
+
+  // Rebuild item type dropdown
+  const itSel = document.getElementById('return-filter-itemtype');
+  const curIt = itSel.value;
+  const allItemTypes = [...new Set(db.returns.map(r=>r.itemType))].filter(Boolean).sort();
+  itSel.innerHTML = '<option value="">All Item Types</option>' + allItemTypes.map(t=>`<option value="${esc(t)}"${t===curIt?' selected':''}>${esc(t)}</option>`).join('');
 
   // Rebuild month dropdown
   const mSel = document.getElementById('return-filter-month');
@@ -3337,6 +3407,7 @@ function renderReturns() {
   const rows = db.returns.filter(r =>
     (!s  || [r.tid,r.serial,r.merchant,r.tech,r.itemType,r.desc,r.remarks].some(v=>String(v||'').toLowerCase().includes(s)))
     && (!tf || r.tech===tf)
+    && (!itf || r.itemType===itf)
     && (!mf || monthKey(r.date)===mf)
   );
 
@@ -3412,12 +3483,19 @@ function renderRequests() {
   const sf = document.getElementById('request-filter-status').value;
   const psf = document.getElementById('request-filter-partstatus').value;
   const tf  = document.getElementById('request-filter-tech').value;
+  const itf = document.getElementById('request-filter-itemtype').value;
 
   // Rebuild bank dropdown
   const bankSel = document.getElementById('request-filter-bank');
   const curBank = bankSel.value;
   const allBanks = [...new Set(db.requests.map(r=>r.bank))].filter(Boolean).sort();
   bankSel.innerHTML = '<option value="">All Banks</option>' + allBanks.map(b=>`<option value="${esc(b)}"${b===curBank?' selected':''}>${esc(b)}</option>`).join('');
+
+  // Rebuild item type dropdown
+  const itSel = document.getElementById('request-filter-itemtype');
+  const curIt = itSel.value;
+  const allItemTypes = [...new Set(db.requests.map(r=>r.itemType))].filter(Boolean).sort();
+  itSel.innerHTML = '<option value="">All Item Types</option>' + allItemTypes.map(t=>`<option value="${esc(t)}"${t===curIt?' selected':''}>${esc(t)}</option>`).join('');
 
   // Rebuild technician dropdown — from active staff plus any technician
   // name already present on a request (in case it was set by hand in the
@@ -3435,6 +3513,7 @@ function renderRequests() {
     && (!sf || (r.status||'PENDING')===sf)
     && (!psf || (psf==='__NONE__' ? !r.partStatus : r.partStatus===psf))
     && (!tf || (tf==='__NONE__' ? !r.technician : r.technician===tf))
+    && (!itf || r.itemType===itf)
   );
 
   document.getElementById('request-count-badge').textContent = rows.length + ' RECORDS';
@@ -5108,6 +5187,10 @@ function openPdfModal() {
         <input type="checkbox" id="pdf-staff" checked onchange="document.getElementById('pdf-card-staff').classList.toggle('selected',this.checked);updatePdfPreview()">
         <div><div class="export-sheet-label">👥 Staff List</div><div class="export-sheet-sub" id="pdf-staff-sub">— members</div></div>
       </label>
+      <label class="export-sheet-card selected" id="pdf-card-itemtype">
+        <input type="checkbox" id="pdf-itemtype" checked onchange="document.getElementById('pdf-card-itemtype').classList.toggle('selected',this.checked);updatePdfPreview()">
+        <div><div class="export-sheet-label">🏷️ Item Type Summary</div><div class="export-sheet-sub">Counts by item type</div></div>
+      </label>
     </div>
     <div class="export-preview" id="pdf-preview">Calculating…</div>
     <div class="modal-actions">
@@ -5141,7 +5224,7 @@ function updatePdfPreview() {
   if (staffEl) staffEl.textContent = db.staff.length + ' members';
   const total = (document.getElementById('pdf-dispatch').checked  ? f.dRows.length : 0)
               + (document.getElementById('pdf-returns').checked   ? f.rRows.length : 0);
-  const secs  = ['pdf-summary','pdf-dispatch','pdf-returns','pdf-outstanding','pdf-staff'].filter(id=>document.getElementById(id).checked).length;
+  const secs  = ['pdf-summary','pdf-dispatch','pdf-returns','pdf-outstanding','pdf-staff','pdf-itemtype'].filter(id=>document.getElementById(id).checked).length;
   document.getElementById('pdf-preview').innerHTML =
     `<span>${total} records</span> across <span>${secs} section${secs!==1?'s':''}</span>` +
     (f.from && f.to ? ` &nbsp;·&nbsp; <span>${fmtDate(f.from)} → ${fmtDate(f.to)}</span>` : ' &nbsp;·&nbsp; All dates');
@@ -5159,6 +5242,7 @@ function doPdfExport() {
   const inclReturns     = document.getElementById('pdf-returns').checked;
   const inclOutstanding = document.getElementById('pdf-outstanding').checked;
   const inclStaff       = document.getElementById('pdf-staff').checked;
+  const inclItemType    = document.getElementById('pdf-itemtype').checked;
 
   const t2 = new Date(); t2.setHours(0,0,0,0);
   // IMPORTANT: these must be derived from f.dRows/f.rRows (the date-filtered
@@ -5398,6 +5482,38 @@ function doPdfExport() {
             <th>Area / Region</th><th>Contact</th><th>Email</th><th>Status</th>
           </tr></thead>
           <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  }
+
+  /* ── Item Type Summary ── */
+  if (inclItemType) {
+    const types = [...new Set([...f.dRows.map(d=>d.itemType), ...f.rRows.map(r=>r.itemType)].filter(Boolean))].sort();
+    let dTotal = 0, rTotal = 0;
+    const rows = types.length ? types.map(t => {
+      const dCount = f.dRows.filter(d=>d.itemType===t).length;
+      const rCount = f.rRows.filter(r=>r.itemType===t).length;
+      dTotal += dCount; rTotal += rCount;
+      return `<tr>
+        <td style="font-weight:600">${esc(t)}</td>
+        <td>${dCount}</td>
+        <td>${rCount}</td>
+        <td><strong>${dCount+rCount}</strong></td>
+      </tr>`;
+    }).join('') : `<tr><td colspan="4" style="text-align:center;color:#94a3b8;padding:14px">No item type data in selected range</td></tr>`;
+    html += `
+      <div class="pdf-section">
+        <div class="pdf-section-title">🏷️ Item Type Summary <span>${types.length} item type${types.length!==1?'s':''} · ${dateRange}</span></div>
+        <table class="pdf-table pdf-tbl-itemtype">
+          <colgroup>
+            <col><col><col><col>
+          </colgroup>
+          <thead><tr>
+            <th>Item Type</th><th>Dispatched</th><th>Returned</th><th>Total</th>
+          </tr></thead>
+          <tbody>${rows}
+          ${types.length ? `<tr style="font-weight:700"><td>Total</td><td>${dTotal}</td><td>${rTotal}</td><td>${dTotal+rTotal}</td></tr>` : ''}
+          </tbody>
         </table>
       </div>`;
   }
