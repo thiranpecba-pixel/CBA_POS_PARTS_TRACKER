@@ -5117,6 +5117,10 @@ function openExportModal() {
         <input type="checkbox" id="exp-staff" checked onchange="document.getElementById('card-staff').classList.toggle('selected',this.checked);updateExportPreview()">
         <div><div class="export-sheet-label">👥 Staff List</div><div class="export-sheet-sub" id="exp-staff-sub">— members</div></div>
       </label>
+      <label class="export-sheet-card selected" id="card-itemtype">
+        <input type="checkbox" id="exp-itemtype" checked onchange="document.getElementById('card-itemtype').classList.toggle('selected',this.checked);updateExportPreview()">
+        <div><div class="export-sheet-label">🏷️ Item Type Summary</div><div class="export-sheet-sub" id="exp-itemtype-sub">Counts by item type</div></div>
+      </label>
     </div>
     <div class="export-preview" id="export-preview">Calculating…</div>
     <div class="modal-actions">
@@ -5144,9 +5148,11 @@ function updateExportPreview() {
   document.getElementById('exp-dispatch-sub').textContent = f.dRows.length + ' records';
   document.getElementById('exp-returns-sub').textContent  = f.rRows.length + ' records';
   document.getElementById('exp-staff-sub').textContent    = db.staff.length + ' members';
+  const itTypes = [...new Set([...f.dRows.map(d=>d.itemType), ...f.rRows.map(r=>r.itemType)].filter(Boolean))];
+  document.getElementById('exp-itemtype-sub').textContent = itTypes.length + ' item type' + (itTypes.length!==1?'s':'');
   const total  = (document.getElementById('exp-dispatch').checked ? f.dRows.length : 0)
                + (document.getElementById('exp-returns').checked  ? f.rRows.length : 0);
-  const sheets = ['exp-dispatch','exp-returns','exp-outstanding','exp-staff'].filter(id=>document.getElementById(id).checked).length;
+  const sheets = ['exp-dispatch','exp-returns','exp-outstanding','exp-staff','exp-itemtype'].filter(id=>document.getElementById(id).checked).length;
   document.getElementById('export-preview').innerHTML =
     `Exporting <span>${total} records</span> across <span>${sheets} sheet${sheets!==1?'s':''}</span>` +
     (f.from && f.to ? ` &nbsp;·&nbsp; <span>${fmtDate(f.from)} → ${fmtDate(f.to)}</span>` : ' &nbsp;·&nbsp; All dates');
@@ -5210,6 +5216,22 @@ function doExport() {
     addSheet('STAFF LIST',
       ['#','Name','Role','Area / Region','Contact','Email','Status'],
       db.staff.map(s => [s.id,s.name,s.role,s.area,s.contact||'',s.email||'',s.active])
+    );
+  }
+  if (document.getElementById('exp-itemtype').checked) {
+    const types = [...new Set([...f.dRows.map(d=>d.itemType), ...f.rRows.map(r=>r.itemType)].filter(Boolean))].sort();
+    let dTotal = 0, rTotal = 0, pTotal = 0;
+    const itRows = types.map(t => {
+      const dCount = f.dRows.filter(d=>d.itemType===t).length;
+      const rCount = f.rRows.filter(r=>r.itemType===t).length;
+      const pCount = dCount - rCount;
+      dTotal += dCount; rTotal += rCount; pTotal += pCount;
+      return [t, dCount, rCount, pCount];
+    });
+    if (types.length) itRows.push(['Total', dTotal, rTotal, pTotal]);
+    addSheet('ITEM TYPE SUMMARY',
+      ['Item Type','Dispatched','Returned','Pending'],
+      itRows
     );
   }
   if (!wb.SheetNames.length) { showToast('Select at least one sheet to export', true); return; }
@@ -5559,16 +5581,17 @@ function doPdfExport() {
   /* ── Item Type Summary ── */
   if (inclItemType) {
     const types = [...new Set([...f.dRows.map(d=>d.itemType), ...f.rRows.map(r=>r.itemType)].filter(Boolean))].sort();
-    let dTotal = 0, rTotal = 0;
+    let dTotal = 0, rTotal = 0, pTotal = 0;
     const rows = types.length ? types.map(t => {
       const dCount = f.dRows.filter(d=>d.itemType===t).length;
       const rCount = f.rRows.filter(r=>r.itemType===t).length;
-      dTotal += dCount; rTotal += rCount;
+      const pCount = dCount - rCount;
+      dTotal += dCount; rTotal += rCount; pTotal += pCount;
       return `<tr>
         <td style="font-weight:600">${esc(t)}</td>
         <td>${dCount}</td>
         <td>${rCount}</td>
-        <td><strong>${dCount+rCount}</strong></td>
+        <td><strong>${pCount}</strong></td>
       </tr>`;
     }).join('') : `<tr><td colspan="4" style="text-align:center;color:#94a3b8;padding:14px">No item type data in selected range</td></tr>`;
     html += `
@@ -5579,10 +5602,10 @@ function doPdfExport() {
             <col><col><col><col>
           </colgroup>
           <thead><tr>
-            <th>Item Type</th><th>Dispatched</th><th>Returned</th><th>Total</th>
+            <th>Item Type</th><th>Dispatched</th><th>Returned</th><th>Pending</th>
           </tr></thead>
           <tbody>${rows}
-          ${types.length ? `<tr style="font-weight:700"><td>Total</td><td>${dTotal}</td><td>${rTotal}</td><td>${dTotal+rTotal}</td></tr>` : ''}
+          ${types.length ? `<tr style="font-weight:700"><td>Total</td><td>${dTotal}</td><td>${rTotal}</td><td>${pTotal}</td></tr>` : ''}
           </tbody>
         </table>
       </div>`;
