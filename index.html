@@ -82,6 +82,7 @@
   onSnapshot(DB_DOC, (snap) => {
     if (!snap.exists() || !window._dbReady) return;
     const remote = snap.data();
+    window._loadFailed = false;
     // Only apply if it differs from local (avoid echo of own saves)
     // NOTE: "requests" (Bank Requests) is intentionally excluded — that data
     // lives only in the PARTS REQUEST Google Sheet, never in Firebase.
@@ -1748,6 +1749,10 @@ function saveRequestsToLocalStorage() {
 // PARTS REQUEST SHEET SYNC block below). It's kept in localStorage instead
 // so it survives a page refresh on this terminal.
 async function saveDb() {
+  if (window._loadFailed) {
+    showToast('⚠️ Not saved — cloud data was never loaded. Refresh the page.', true);
+    return;
+  }
   saveRequestsToLocalStorage();
   if (window._fbSave) {
     await window._fbSave({
@@ -1762,22 +1767,37 @@ async function saveDb() {
 
 // Load db from Firestore on startup, then render
 async function loadDb() {
-  if (window._fbLoad) {
-    const data = await window._fbLoad();
-    if (data) {
-      db.staff    = data.staff    || [];
-      db.dispatch = data.dispatch || [];
-      db.returns  = data.returns  || [];
-      db.nextId   = data.nextId   || 1;
+  try {
+    if (window._fbLoad) {
+      // Give Firestore 8 seconds, then stop waiting
+      const data = await Promise.race([
+        window._fbLoad(),
+        new Promise(resolve => setTimeout(() => resolve('__timeout__'), 8000))
+      ]);
+      if (data === '__timeout__') {
+        window._loadFailed = true; // block saves so we never overwrite the cloud with empty data
+        showToast('⚠️ Cloud is slow/unreachable — data not loaded. Saving disabled.', true);
+      } else if (data) {
+        db.staff    = data.staff    || [];
+        db.dispatch = data.dispatch || [];
+        db.returns  = data.returns  || [];
+        db.nextId   = data.nextId   || 1;
+      }
     }
+    db.requests = loadRequestsFromLocalStorage();
+  } catch (e) {
+    console.error('loadDb failed:', e);
+    window._loadFailed = true;
+  } finally {
+    window._dbReady = true;
+    // Always hide the overlay, no matter what happened above
+    document.getElementById('loading-overlay').style.display = 'none';
   }
-  db.requests = loadRequestsFromLocalStorage();
-  window._dbReady = true;
-  renderOverview();
-  renderDispatch();
-  renderRequests();
-  renderOverdueToast();
-  document.getElementById('loading-overlay').style.display = 'none';
+
+  // Each render isolated so one failure can't block the rest
+  [renderOverview, renderDispatch, renderRequests, renderOverdueToast].forEach(fn => {
+    try { fn(); } catch (e) { console.error(fn.name + ' failed:', e); }
+  });
 
   // Storage watchdog: check right away, then re-check periodically so
   // growth from OTHER devices' saves (picked up via onSnapshot) still
@@ -2992,7 +3012,7 @@ window._dismissedOverdueIds = window._dismissedOverdueIds || new Set();
 
 function renderOverdueToast() {
   const box = document.getElementById('overdue-toast');
-  if (!box || !window._dbReady) return;
+  if (box) { box.classList.remove('show'); box.innerHTML = ''; }
 
   const overdue = getOverdueRequests();
   const liveIds = new Set(overdue.map(r => r.id));
