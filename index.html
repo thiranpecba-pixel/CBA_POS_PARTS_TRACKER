@@ -1939,7 +1939,12 @@ async function fetchPartsRequestSheet() {
   }
 }
 
-function mergeSheetRequestsIntoDb(sheetRows) {
+function mergeSheetRequestsIntoDb(sheetRows, opts) {
+  // opts.skipAutoDispatch — used right after a Restore Backup so requests
+  // that were completed AFTER the backup date are absorbed into the list
+  // WITHOUT re-creating Dispatch Log rows (which would bring post-backup
+  // data back into the Dispatch Log and the Log Sheet).
+  opts = opts || {};
   let changed = false;
   sheetRows.forEach(sr => {
     const status = sr.available === 'COMPLETE' ? 'HANDED_OVER' : 'PENDING';
@@ -1976,7 +1981,7 @@ function mergeSheetRequestsIntoDb(sheetRows) {
       // First time we've ever seen this row, and it's already marked
       // COMPLETE in the sheet (e.g. handled before this app started
       // tracking it) — still needs a Dispatch Log entry.
-      if (status === 'HANDED_OVER') autoCreateDispatchFromRequest(db.requests[db.requests.length - 1]);
+      if (status === 'HANDED_OVER' && !opts.skipAutoDispatch) autoCreateDispatchFromRequest(db.requests[db.requests.length - 1]);
     } else {
       // Keep basic fields fresh in case they were edited in the sheet
       if (existing.tid !== sr.tid)           { existing.tid = sr.tid; changed = true; }
@@ -2062,7 +2067,10 @@ async function syncPartsRequestSheet() {
   window._lastSyncAt = Date.now();
   window._lastSyncOk = rows != null;
   updateLastSyncedLabel();
-  if (rows) mergeSheetRequestsIntoDb(rows);
+  // While a Restore Backup is running, the restore itself absorbs the
+  // sheet's rows (without auto-dispatch) — don't let a background poll
+  // merge them first.
+  if (rows && !window._restoreInProgress) mergeSheetRequestsIntoDb(rows);
 }
 
 // Manual "🔄 Refresh" button on the Bank Requests tab — forces an
@@ -2597,29 +2605,49 @@ async function confirmRestoreBackup() {
   if (!data) return;
   const resetSheetEl = document.getElementById('restore-reset-sheet');
   const resetSheet = !!(resetSheetEl && resetSheetEl.checked);
-  db.staff    = data.staff    || [];
-  db.dispatch = data.dispatch || [];
-  db.returns  = data.returns  || [];
-  db.requests = data.requests || [];
-  db.nextId   = data.nextId   || 1;
-  window._pendingRestoreData = null;
-  closeModal();
-  renderOverview(); renderDispatch(); renderRequests();
-  await saveDb();
+  // Hold the background PARTS REQUEST poll until the restore has finished,
+  // so it can't re-create Dispatch Log rows mid-restore.
+  window._restoreInProgress = true;
+  try {
+    db.staff    = data.staff    || [];
+    db.dispatch = data.dispatch || [];
+    db.returns  = data.returns  || [];
+    db.requests = data.requests || [];
+    db.nextId   = data.nextId   || 1;
+    window._pendingRestoreData = null;
+    closeModal();
+    renderOverview(); renderDispatch(); renderRequests();
+    await saveDb();
 
-  // Firebase save was blocked (cloud data never loaded) — do NOT wipe the
-  // sheet in that case, or the sheet would end up as the only copy.
-  if (window._loadFailed) return;
+    // Firebase save was blocked (cloud data never loaded) — do NOT wipe the
+    // sheet in that case, or the sheet would end up as the only copy.
+    if (window._loadFailed) return;
 
-  if (!resetSheet) {
-    showToast('✅ Backup restored — data pushed to Firebase (Log Sheet left unchanged)');
-    return;
+    // Bank Requests that were completed AFTER the backup date are still
+    // COMPLETE in the PARTS REQUEST sheet. Absorb them now WITHOUT
+    // auto-creating Dispatch Log rows, otherwise the next sync would
+    // re-add post-backup dispatches (to the Dispatch Log and the Log Sheet).
+    const sheetRows = await fetchPartsRequestSheet();
+    if (sheetRows) mergeSheetRequestsIntoDb(sheetRows, { skipAutoDispatch: true });
+    const requestsAbsorbed = !!sheetRows;
+
+    if (!resetSheet) {
+      showToast('✅ Backup restored — data pushed to Firebase (Log Sheet left unchanged)');
+      return;
+    }
+    // Full wipe-and-rewrite of the "Dispatch Log" / "Return Log" tabs from the
+    // restored data, so rows newer than the backup disappear from the sheet.
+    const ok = await bulkSyncLogSheet();
+    if (!ok) {
+      showToast('⚠️ Backup restored in Firebase, but the Log Sheet reset failed — click "Push All to Log Sheet" on the Dispatch tab to retry', true);
+    } else if (!requestsAbsorbed) {
+      showToast('✅ Backup restored and Log Sheet reset — but the PARTS REQUEST sheet could not be reached, so check Dispatch Log for re-added items after the next sync', true);
+    } else {
+      showToast('✅ Backup restored — Firebase and Log Sheet now match this backup');
+    }
+  } finally {
+    window._restoreInProgress = false;
   }
-  // Full wipe-and-rewrite of the "Dispatch Log" / "Return Log" tabs from the
-  // restored data, so rows newer than the backup disappear from the sheet.
-  const ok = await bulkSyncLogSheet();
-  if (ok) showToast('✅ Backup restored — Firebase and Log Sheet now match this backup');
-  else    showToast('⚠️ Backup restored in Firebase, but the Log Sheet reset failed — click "Push All to Log Sheet" on the Dispatch tab to retry', true);
 }
 
 // Read the chosen file, validate it, then display its contents (read-only — never touches live data).
