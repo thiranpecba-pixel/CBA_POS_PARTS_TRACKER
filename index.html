@@ -2301,7 +2301,7 @@ async function appendReturnToLogSheet(entry) {
 async function bulkSyncLogSheet() {
   if (!LOG_SHEET_WRITE_URL || LOG_SHEET_WRITE_URL.includes('PASTE_YOUR')) {
     showToast('⚠️ Set LOG_SHEET_WRITE_URL first (see the config comment near the top of the script)', true);
-    return;
+    return false;
   }
   showToast('⏳ Pushing full Dispatch/Return history to Log Sheet…');
   try {
@@ -2320,9 +2320,11 @@ async function bulkSyncLogSheet() {
     } else {
       showToast('⚠️ Bulk push to Log Sheet failed — check console', true);
     }
+    return result.ok;
   } catch (e) {
     console.error('Bulk sync to Log Sheet failed:', e);
     showToast('⚠️ Bulk push to Log Sheet failed — check console', true);
+    return false;
   }
 }
 
@@ -2574,6 +2576,11 @@ function handleRestoreBackupFile(event) {
         <strong>${data.returns.length}</strong> return records · <strong>${(data.requests||[]).length}</strong> requests<br><br>
         This cannot be undone. Make sure this is really the file you want.
       </div>
+      <label style="display:flex;gap:10px;align-items:flex-start;padding:12px 14px;margin-bottom:6px;background:var(--surface2);border:1px solid var(--border2);border-radius:10px;cursor:pointer;font-size:12px;color:var(--text-muted);line-height:1.5">
+        <input type="checkbox" id="restore-reset-sheet" checked style="margin-top:2px;accent-color:var(--accent);width:15px;height:15px;flex-shrink:0">
+        <span><strong style="color:var(--text)">Also reset the Google Log Sheet to match this backup</strong><br>
+        Erases every row in the "Dispatch Log" and "Return Log" tabs and rewrites them from this backup, so any rows newer than the backup are removed from the sheet too. (The PARTS REQUEST sheet is never touched.)</span>
+      </label>
       <div class="modal-actions">
         <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
         <button class="btn btn-danger-solid" onclick="confirmRestoreBackup()">⬆ Restore This Backup</button>
@@ -2588,6 +2595,8 @@ function handleRestoreBackupFile(event) {
 async function confirmRestoreBackup() {
   const data = window._pendingRestoreData;
   if (!data) return;
+  const resetSheetEl = document.getElementById('restore-reset-sheet');
+  const resetSheet = !!(resetSheetEl && resetSheetEl.checked);
   db.staff    = data.staff    || [];
   db.dispatch = data.dispatch || [];
   db.returns  = data.returns  || [];
@@ -2597,7 +2606,20 @@ async function confirmRestoreBackup() {
   closeModal();
   renderOverview(); renderDispatch(); renderRequests();
   await saveDb();
-  showToast('✅ Backup restored — data pushed to Firebase');
+
+  // Firebase save was blocked (cloud data never loaded) — do NOT wipe the
+  // sheet in that case, or the sheet would end up as the only copy.
+  if (window._loadFailed) return;
+
+  if (!resetSheet) {
+    showToast('✅ Backup restored — data pushed to Firebase (Log Sheet left unchanged)');
+    return;
+  }
+  // Full wipe-and-rewrite of the "Dispatch Log" / "Return Log" tabs from the
+  // restored data, so rows newer than the backup disappear from the sheet.
+  const ok = await bulkSyncLogSheet();
+  if (ok) showToast('✅ Backup restored — Firebase and Log Sheet now match this backup');
+  else    showToast('⚠️ Backup restored in Firebase, but the Log Sheet reset failed — click "Push All to Log Sheet" on the Dispatch tab to retry', true);
 }
 
 // Read the chosen file, validate it, then display its contents (read-only — never touches live data).
