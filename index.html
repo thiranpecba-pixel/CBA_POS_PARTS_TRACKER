@@ -1763,6 +1763,7 @@ async function saveDb() {
     });
   }
   checkStorageAndMaybeWarn();
+  scheduleLogSheetSync();
 }
 
 // Load db from Firestore on startup, then render
@@ -1804,6 +1805,10 @@ async function loadDb() {
   // gets caught even if this terminal never calls saveDb() itself.
   checkStorageAndMaybeWarn();
   setInterval(checkStorageAndMaybeWarn, 5 * 60 * 1000);
+
+  // Log Sheet safety net: re-check every 2 min (no-op if nothing changed).
+  scheduleLogSheetSync(3000);
+  setInterval(() => scheduleLogSheetSync(0), 120000);
 
   // Now that db.requests is loaded, start polling the PARTS REQUEST sheet
   syncPartsRequestSheet();
@@ -2052,7 +2057,7 @@ function mergeSheetRequestsIntoDb(sheetRows, opts) {
       // A handed-over request auto-created a Dispatch Log row above —
       // push the updated dispatch array too, so every other terminal
       // (and a refresh of this one) sees the new dispatch entry.
-      if (window._autoDispatchDirty) { fields.dispatch = db.dispatch; window._autoDispatchDirty = false; }
+      if (window._autoDispatchDirty) { fields.dispatch = db.dispatch; window._autoDispatchDirty = false; scheduleLogSheetSync(); }
       window._fbSavePartial(fields);
     }
   }
@@ -2253,53 +2258,59 @@ function returnEntryToSheetRow(e) {
   };
 }
 
-// Fires a single Dispatch Log row off to the Log Sheet. Fire-and-forget:
-// this is a mirror only, so a failure here is logged/toasted quietly and
-// never blocks or reverts the local (Firebase-backed) save that already
-// happened by the time this is called.
-async function appendDispatchToLogSheet(entry) {
-  if (!LOG_SHEET_WRITE_URL || LOG_SHEET_WRITE_URL.includes('PASTE_YOUR')) {
-    console.warn('LOG_SHEET_WRITE_URL is not configured — skipping Dispatch Log Sheet mirror.');
-    return false;
-  }
+// The Log Sheet is a MIRROR of db.dispatch / db.returns. Previously every
+// create fired a one-off "append row" and nothing else was ever sent, so
+// edits, deletes, technician reassignments, clears and restores never
+// reached the sheet. Now every change schedules a debounced FULL re-sync
+// (wipe + rewrite — idempotent, so it can never duplicate rows and can't
+// race with itself). Pushes are serialised, skipped when nothing changed
+// since the last successful push, and retried automatically on failure.
+window._logSync = { timer: null, inFlight: false, again: false, lastOk: null, failCount: 0 };
+
+function _logSheetPayload() {
+  return JSON.stringify({
+    action: 'bulkSync',
+    dispatchRows: db.dispatch.map(dispatchEntryToSheetRow),
+    returnRows: db.returns.map(returnEntryToSheetRow),
+  });
+}
+
+function scheduleLogSheetSync(delayMs) {
+  if (!LOG_SHEET_WRITE_URL || LOG_SHEET_WRITE_URL.includes('PASTE_YOUR')) return;
+  clearTimeout(window._logSync.timer);
+  window._logSync.timer = setTimeout(runLogSheetSync, delayMs == null ? 2000 : delayMs);
+}
+
+async function runLogSheetSync() {
+  const st = window._logSync;
+  if (window._loadFailed || !window._dbReady || window._restoreInProgress) return;
+  if (st.inFlight) { st.again = true; return; }
+  const body = _logSheetPayload();
+  if (body === st.lastOk) return; // nothing changed since last successful push
+  st.inFlight = true;
   try {
     const res = await fetch(LOG_SHEET_WRITE_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // avoids a CORS preflight
-      body: JSON.stringify({ action: 'appendDispatch', row: dispatchEntryToSheetRow(entry) }),
+      body,
     });
     const result = await verifySheetWriteResponse(res);
-    if (!result.ok) showToast('⚠️ Dispatch entry saved, but Log Sheet mirror failed', true);
-    return result.ok;
+    if (result.ok) { st.lastOk = body; st.failCount = 0; }
+    else throw new Error('Log Sheet did not confirm: ' + String(result.raw).slice(0, 200));
   } catch (e) {
-    console.error('Failed to mirror Dispatch entry to Log Sheet:', e);
-    showToast('⚠️ Dispatch entry saved, but Log Sheet mirror failed', true);
-    return false;
+    st.failCount++;
+    console.error('Log Sheet sync failed (attempt ' + st.failCount + '):', e);
+    if (st.failCount === 1 || st.failCount % 5 === 0) showToast('⚠️ Log Sheet sync failed — will retry automatically', true);
+    scheduleLogSheetSync(Math.min(60000, 5000 * st.failCount));
+  } finally {
+    st.inFlight = false;
+    if (st.again) { st.again = false; scheduleLogSheetSync(500); }
   }
 }
 
-// Fires a single Return Log row off to the Log Sheet. Same fire-and-forget
-// contract as appendDispatchToLogSheet() above.
-async function appendReturnToLogSheet(entry) {
-  if (!LOG_SHEET_WRITE_URL || LOG_SHEET_WRITE_URL.includes('PASTE_YOUR')) {
-    console.warn('LOG_SHEET_WRITE_URL is not configured — skipping Return Log Sheet mirror.');
-    return false;
-  }
-  try {
-    const res = await fetch(LOG_SHEET_WRITE_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ action: 'appendReturn', row: returnEntryToSheetRow(entry) }),
-    });
-    const result = await verifySheetWriteResponse(res);
-    if (!result.ok) showToast('⚠️ Return logged, but Log Sheet mirror failed', true);
-    return result.ok;
-  } catch (e) {
-    console.error('Failed to mirror Return entry to Log Sheet:', e);
-    showToast('⚠️ Return logged, but Log Sheet mirror failed', true);
-    return false;
-  }
-}
+// Kept under the old names so existing call sites keep working.
+function appendDispatchToLogSheet(entry) { scheduleLogSheetSync(); return Promise.resolve(true); }
+function appendReturnToLogSheet(entry)   { scheduleLogSheetSync(); return Promise.resolve(true); }
 
 // One-click "push everything" — sends every Dispatch and Return record
 // currently in db (including anything logged before the Log Sheet mirror
@@ -2313,17 +2324,15 @@ async function bulkSyncLogSheet() {
   }
   showToast('⏳ Pushing full Dispatch/Return history to Log Sheet…');
   try {
+    const body = _logSheetPayload();
     const res = await fetch(LOG_SHEET_WRITE_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({
-        action: 'bulkSync',
-        dispatchRows: db.dispatch.map(dispatchEntryToSheetRow),
-        returnRows: db.returns.map(returnEntryToSheetRow),
-      }),
+      body,
     });
     const result = await verifySheetWriteResponse(res);
     if (result.ok) {
+      window._logSync.lastOk = body;
       showToast(`✅ Pushed ${db.dispatch.length} dispatch & ${db.returns.length} return records to the Log Sheet`);
     } else {
       showToast('⚠️ Bulk push to Log Sheet failed — check console', true);
