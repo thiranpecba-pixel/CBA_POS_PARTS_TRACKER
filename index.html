@@ -1675,8 +1675,9 @@ const PARTS_SHEET_POLL_MS   = 15000; // how often to re-check the sheet for new/
 
 /* ============================================================
    CONFIG — Dispatch Log / Return Log Google Sheet mirror
-   Every time a Dispatch or Return entry is created (manually, or
-   auto-created from a Bank Request handover), this app fires a
+   BACKUP ONLY — the sheet is add/update-only and NEVER loses rows when
+   records are cleared/deleted in the app (needs the upsertSync Apps Script,
+   see LOG_SHEET_APPS_SCRIPT.gs). Every Dispatch/Return change fires a
    one-way write to a small Google Apps Script Web App bound to the
    spreadsheet below, which appends a row to that sheet's
    "Dispatch Log" or "Return Log" tab. This is a MIRROR only — the
@@ -1753,6 +1754,7 @@ async function saveDb() {
     showToast('⚠️ Not saved — cloud data was never loaded. Refresh the page.', true);
     return;
   }
+  ensureLogUids();
   saveRequestsToLocalStorage();
   if (window._fbSave) {
     await window._fbSave({
@@ -1786,6 +1788,8 @@ async function loadDb() {
       }
     }
     db.requests = loadRequestsFromLocalStorage();
+    // Give legacy records a permanent id so the Log Sheet backup can match them.
+    if (!window._loadFailed && ensureLogUids()) setTimeout(() => saveDb(), 1500);
   } catch (e) {
     console.error('loadDb failed:', e);
     window._loadFailed = true;
@@ -2240,6 +2244,7 @@ async function pushFirstSeenToSheet(sheetRow, iso) {
 // Apps Script expects for the "Dispatch Log" tab.
 function dispatchEntryToSheetRow(e) {
   return {
+    uid: e.uid || '',
     date: e.date || '', time: e.time || '', tid: e.tid || '',
     merchant: e.merchant || '', serial: e.serial || '', tech: e.tech || '',
     itemType: e.itemType || '', desc: e.desc || '', dueDate: e.dueDate || '',
@@ -2251,6 +2256,7 @@ function dispatchEntryToSheetRow(e) {
 // Apps Script expects for the "Return Log" tab.
 function returnEntryToSheetRow(e) {
   return {
+    uid: e.uid || '',
     date: e.date || '', time: e.time || '', tid: e.tid || '',
     merchant: e.merchant || '', serial: e.serial || '', tech: e.tech || '',
     itemType: e.itemType || '', desc: e.desc || '', condition: e.condition || '',
@@ -2258,18 +2264,29 @@ function returnEntryToSheetRow(e) {
   };
 }
 
-// The Log Sheet is a MIRROR of db.dispatch / db.returns. Previously every
-// create fired a one-off "append row" and nothing else was ever sent, so
-// edits, deletes, technician reassignments, clears and restores never
-// reached the sheet. Now every change schedules a debounced FULL re-sync
-// (wipe + rewrite — idempotent, so it can never duplicate rows and can't
-// race with itself). Pushes are serialised, skipped when nothing changed
-// since the last successful push, and retried automatically on failure.
+// The Log Sheet is a BACKUP of db.dispatch / db.returns — it is ADD/UPDATE
+// ONLY. Every record carries a stable `uid`; the Apps Script adds rows for
+// uids it hasn't seen and updates rows whose uid already exists (edits,
+// technician changes), but it NEVER deletes. Clearing logs, deleting rows,
+// or restoring an older backup in the app therefore leaves the sheet intact.
+// Pushes are debounced, serialised, skipped when nothing changed, and
+// retried automatically on failure.
 window._logSync = { timer: null, inFlight: false, again: false, lastOk: null, failCount: 0 };
 
+// Gives every dispatch/return record a permanent unique id (legacy records
+// get one the first time this runs). Returns true if any id was assigned.
+function ensureLogUids() {
+  let changed = false;
+  const mk = () => 'u' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+  db.dispatch.forEach(e => { if (!e.uid) { e.uid = mk(); changed = true; } });
+  db.returns.forEach(e  => { if (!e.uid) { e.uid = mk(); changed = true; } });
+  return changed;
+}
+
 function _logSheetPayload() {
+  ensureLogUids();
   return JSON.stringify({
-    action: 'bulkSync',
+    action: 'upsertSync', // add new rows / update existing rows by uid — never deletes
     dispatchRows: db.dispatch.map(dispatchEntryToSheetRow),
     returnRows: db.returns.map(returnEntryToSheetRow),
   });
@@ -2314,9 +2331,8 @@ function appendReturnToLogSheet(entry)   { scheduleLogSheetSync(); return Promis
 
 // One-click "push everything" — sends every Dispatch and Return record
 // currently in db (including anything logged before the Log Sheet mirror
-// was set up) to the Apps Script, which WIPES and rewrites both tabs from
-// scratch. Safe to run repeatedly: it's always a full replace, never an
-// append-on-top, so re-running it can never create duplicate rows.
+// was set up) to the Apps Script, which adds anything missing and updates
+// existing rows by uid. It never deletes sheet rows, and is safe to re-run.
 async function bulkSyncLogSheet() {
   if (!LOG_SHEET_WRITE_URL || LOG_SHEET_WRITE_URL.includes('PASTE_YOUR')) {
     showToast('⚠️ Set LOG_SHEET_WRITE_URL first (see the config comment near the top of the script)', true);
@@ -2593,11 +2609,7 @@ function handleRestoreBackupFile(event) {
         <strong>${data.returns.length}</strong> return records · <strong>${(data.requests||[]).length}</strong> requests<br><br>
         This cannot be undone. Make sure this is really the file you want.
       </div>
-      <label style="display:flex;gap:10px;align-items:flex-start;padding:12px 14px;margin-bottom:6px;background:var(--surface2);border:1px solid var(--border2);border-radius:10px;cursor:pointer;font-size:12px;color:var(--text-muted);line-height:1.5">
-        <input type="checkbox" id="restore-reset-sheet" checked style="margin-top:2px;accent-color:var(--accent);width:15px;height:15px;flex-shrink:0">
-        <span><strong style="color:var(--text)">Also reset the Google Log Sheet to match this backup</strong><br>
-        Erases every row in the "Dispatch Log" and "Return Log" tabs and rewrites them from this backup, so any rows newer than the backup are removed from the sheet too. (The PARTS REQUEST sheet is never touched.)</span>
-      </label>
+      <div class="info-box" style="margin-bottom:6px">🛡️ The Google <strong>Log Sheet is a backup and is never erased</strong> by a restore — its Dispatch Log / Return Log rows stay exactly as they are. (The PARTS REQUEST sheet is never touched either.)</div>
       <div class="modal-actions">
         <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
         <button class="btn btn-danger-solid" onclick="confirmRestoreBackup()">⬆ Restore This Backup</button>
@@ -2612,8 +2624,6 @@ function handleRestoreBackupFile(event) {
 async function confirmRestoreBackup() {
   const data = window._pendingRestoreData;
   if (!data) return;
-  const resetSheetEl = document.getElementById('restore-reset-sheet');
-  const resetSheet = !!(resetSheetEl && resetSheetEl.checked);
   // Hold the background PARTS REQUEST poll until the restore has finished,
   // so it can't re-create Dispatch Log rows mid-restore.
   window._restoreInProgress = true;
@@ -2640,20 +2650,9 @@ async function confirmRestoreBackup() {
     if (sheetRows) mergeSheetRequestsIntoDb(sheetRows, { skipAutoDispatch: true });
     const requestsAbsorbed = !!sheetRows;
 
-    if (!resetSheet) {
-      showToast('✅ Backup restored — data pushed to Firebase (Log Sheet left unchanged)');
-      return;
-    }
-    // Full wipe-and-rewrite of the "Dispatch Log" / "Return Log" tabs from the
-    // restored data, so rows newer than the backup disappear from the sheet.
-    const ok = await bulkSyncLogSheet();
-    if (!ok) {
-      showToast('⚠️ Backup restored in Firebase, but the Log Sheet reset failed — click "Push All to Log Sheet" on the Dispatch tab to retry', true);
-    } else if (!requestsAbsorbed) {
-      showToast('✅ Backup restored and Log Sheet reset — but the PARTS REQUEST sheet could not be reached, so check Dispatch Log for re-added items after the next sync', true);
-    } else {
-      showToast('✅ Backup restored — Firebase and Log Sheet now match this backup');
-    }
+    showToast(requestsAbsorbed
+      ? '✅ Backup restored — data pushed to Firebase (Log Sheet backup left untouched)'
+      : '✅ Backup restored — but the PARTS REQUEST sheet could not be reached, so check Dispatch Log for re-added items after the next sync', !requestsAbsorbed);
   } finally {
     window._restoreInProgress = false;
   }
